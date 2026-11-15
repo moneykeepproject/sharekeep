@@ -1,0 +1,15 @@
+[package]
+name = "sk-core"
+description = "ShareKeep core types: money, members, ids and dates (no I/O)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "sk-split"
+description = "ShareKeep split engine: split methods, rules, rounding, balances, settle-up, deposits and proration (no I/O)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sk-core.workspace = true
+serde.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

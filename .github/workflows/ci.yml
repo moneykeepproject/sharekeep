@@ -1,0 +1,40 @@
+# Format, lint and tests on every push to main and every pull request, on Linux, Windows and
+# macOS (GitHub-hosted runners; never the project's own Mac, which only release.yml may use:
+# `cargo xtask workflows` checks that).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch (or pull request) cancels this run: the free plan runs
+# few jobs at once.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (1.97.0, rustfmt, clippy)
+        shell: bash
+        # Pinned, as in MoneyKeep: CI's clippy must match the version the code was checked
+        # with. Raise it on purpose (and fix any new lints) rather than following stable.
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.97.0
+      - name: CI (fmt, clippy, tests, workflow and dialog rules)
+        run: cargo xtask ci
