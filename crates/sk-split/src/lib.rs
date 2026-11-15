@@ -9,17 +9,19 @@
 //! - [`ledger`]: balances, settle-up, "net between us".
 //! - [`deposits`]: held and spending deposits, equity, buy-outs, refunds, deductions.
 //! - [`prorate`]: days present, prepaid proration, the leaving statement.
+//! - [`periods`]: settle-up schedules, schedule changes, events, bill due dates, closing.
 
 pub mod alloc;
 pub mod deposits;
 pub mod ledger;
 pub mod method;
+pub mod periods;
 pub mod prorate;
 pub mod rules;
 
 pub use alloc::Rounding;
 pub use ledger::{settle_up, Balances, Paid, Posting, Transfer};
-pub use method::{split, Item, Limit, Method, Rule, SplitInput};
+pub use method::{period_cap_adjustment, split, Item, Limit, Method, Rule, SplitInput};
 pub use rules::RuleBook;
 
 use sk_core::{Cents, MemberId, NaiveDate, RuleId};
@@ -68,6 +70,13 @@ pub enum SplitError {
         member: MemberId,
         stake: Cents,
     },
+    InvalidSchedule(String),
+    /// No period (or no schedule version) covers this date.
+    NoPeriod(NaiveDate),
+    /// An entry tagged to an event is dated outside the event.
+    OutsideEvent(NaiveDate),
+    /// An adjustment's amounts must add up to zero.
+    AdjustmentNotZeroSum,
     Overflow,
 }
 
@@ -112,6 +121,10 @@ impl fmt::Display for SplitError {
             StakeTooSmall { member, stake } => {
                 write!(f, "{member} owns only {stake} cents of this deposit")
             }
+            InvalidSchedule(why) => write!(f, "{why}"),
+            NoPeriod(d) => write!(f, "no period covers {d}"),
+            OutsideEvent(d) => write!(f, "{d} is outside the event's dates"),
+            AdjustmentNotZeroSum => write!(f, "an adjustment's amounts must add up to zero"),
             Overflow => write!(f, "the amount is too large"),
         }
     }

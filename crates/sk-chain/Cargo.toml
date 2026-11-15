@@ -1,0 +1,18 @@
+[package]
+name = "sk-chain"
+description = "ShareKeep Hyperbook: hash-chained history records, canonical encoding, verification and export"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sk-verify"
+path = "src/bin/sk-verify.rs"
+
+[dependencies]
+sk-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

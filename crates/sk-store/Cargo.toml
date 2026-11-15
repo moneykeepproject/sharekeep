@@ -1,0 +1,24 @@
+[package]
+name = "sk-store"
+description = "ShareKeep book files: SQLite, append-only history (the Hyperbook chain), optional encryption, backups"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sk-core.workspace = true
+sk-chain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+chacha20poly1305.workspace = true
+argon2.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
+unicode-normalization.workspace = true
+fs4.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

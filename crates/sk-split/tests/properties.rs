@@ -415,3 +415,98 @@ fn joining_and_leaving_move_no_money_in_or_out() {
         }
     }
 }
+
+#[test]
+fn periods_tile_the_calendar_without_gaps_or_overlaps() {
+    use chrono::Weekday;
+    use sk_split::periods::{MonthDay, Schedule};
+    let base = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let day = |n: i64| base + chrono::Days::new(n as u64);
+    let weekdays = [
+        Weekday::Mon,
+        Weekday::Tue,
+        Weekday::Wed,
+        Weekday::Thu,
+        Weekday::Fri,
+        Weekday::Sat,
+        Weekday::Sun,
+    ];
+    for seed in 0..400 {
+        let mut r = Rng::new(seed);
+        let start = day(r.range(0, 800));
+        let s = match r.below(3) {
+            0 => Schedule::Weekly {
+                start,
+                weekday: weekdays[r.below(7) as usize],
+                every: r.range(1, 4) as u8,
+            },
+            1 => Schedule::Monthly {
+                start,
+                day: if r.chance(20) {
+                    MonthDay::Last
+                } else {
+                    MonthDay::Day(r.range(1, 28) as u8)
+                },
+                every: [1u8, 2, 3, 6, 12][r.below(5) as usize],
+            },
+            _ => Schedule::EveryNDays {
+                start,
+                days: r.range(1, 365) as u16,
+            },
+        };
+        s.validate().unwrap();
+        let mut date = start;
+        let mut prev: Option<DateSpan> = None;
+        for _ in 0..40 {
+            let p = s
+                .period_containing(date)
+                .unwrap_or_else(|| panic!("seed {seed}: no period for {date}"));
+            assert!(p.contains(date), "seed {seed}");
+            if let Some(q) = prev {
+                assert_eq!(
+                    q.last.succ_opt(),
+                    Some(p.first),
+                    "seed {seed}: gap or overlap"
+                );
+            } else {
+                assert_eq!(p.first, start, "seed {seed}");
+            }
+            // any day inside lands in the same period
+            let mid = p.first + chrono::Days::new(u64::from(p.days() - 1) / 2);
+            assert_eq!(s.period_containing(mid), Some(p), "seed {seed}");
+            prev = Some(p);
+            date = p.last.succ_opt().unwrap();
+        }
+    }
+}
+
+#[test]
+fn period_caps_hold_and_move_no_money() {
+    use sk_split::method::period_cap_adjustment;
+    for seed in 0..CASES {
+        let mut r = Rng::new(seed);
+        let ms = members(r.range(2, 6) as usize);
+        let mut rule = Rule::new("x", Method::Equal, &ms);
+        let totals: BTreeMap<MemberId, Cents> =
+            ms.iter().map(|m| (*m, r.range(0, 200_000))).collect();
+        for m in &ms {
+            if r.chance(40) {
+                rule.period_caps.insert(*m, r.range(0, 150_000));
+            }
+        }
+        let Ok(adj) = period_cap_adjustment(&rule, &totals, r.next()) else {
+            continue;
+        };
+        assert_eq!(adj.values().sum::<Cents>(), 0, "seed {seed}");
+        for m in &ms {
+            let after = totals[m] + adj.get(m).copied().unwrap_or(0);
+            if let Some(cap) = rule.period_caps.get(m) {
+                assert!(
+                    after <= *cap || adj.is_empty() && totals[m] <= *cap,
+                    "seed {seed}"
+                );
+            }
+            assert!(after >= 0, "seed {seed}");
+        }
+    }
+}

@@ -78,6 +78,10 @@ pub struct Rule {
     pub limits: BTreeMap<MemberId, Limit>,
     #[serde(default)]
     pub rounding: Rounding,
+    /// Per-member caps on the total share of one period under this rule, applied when the
+    /// period closes (see [`period_cap_adjustment`]).
+    #[serde(default)]
+    pub period_caps: BTreeMap<MemberId, Cents>,
 }
 
 impl Rule {
@@ -90,6 +94,7 @@ impl Rule {
             excluded: BTreeSet::new(),
             limits: BTreeMap::new(),
             rounding: Rounding::default(),
+            period_caps: BTreeMap::new(),
         }
     }
 
@@ -137,6 +142,14 @@ impl Rule {
                         return Err(SplitError::NotAParticipant(*m));
                     }
                 }
+            }
+        }
+        for (m, cap) in &self.period_caps {
+            if !self.members.contains(m) {
+                return Err(SplitError::NotAMember(*m));
+            }
+            if *cap < 0 {
+                return Err(SplitError::NegativeLimit(*m));
             }
         }
         for (m, l) in &self.limits {
@@ -329,6 +342,51 @@ fn limited(
         return Err(SplitError::LimitsInfeasible);
     }
     Ok(fixed.into_iter().map(|(m, v)| (m, sign * v)).collect())
+}
+
+/// Per-period caps, applied when a period closes: given each member's total share under a
+/// rule in the period, the excess over a member's cap moves to the others in proportion to
+/// their own totals (so it follows the rule's method as applied). Returns the zero-sum
+/// adjustment to post ([`crate::ledger::Posting::Adjustment`]); empty when no cap is hit.
+pub fn period_cap_adjustment(
+    rule: &Rule,
+    totals: &BTreeMap<MemberId, Cents>,
+    seq: u64,
+) -> Result<BTreeMap<MemberId, Cents>, SplitError> {
+    if rule.period_caps.is_empty() || totals.values().all(|v| *v <= 0) {
+        return Ok(BTreeMap::new());
+    }
+    let total: Cents = totals.values().map(|v| (*v).max(0)).sum();
+    let weights: BTreeMap<MemberId, u64> = totals
+        .iter()
+        .map(|(m, v)| (*m, (*v).max(0) as u64))
+        .collect();
+    let mut capped = rule.clone();
+    capped.method = Method::Shares(BTreeMap::new());
+    capped.limits = rule
+        .period_caps
+        .iter()
+        .filter(|(m, _)| totals.contains_key(m))
+        .map(|(m, c)| {
+            (
+                *m,
+                Limit {
+                    max: Some(*c),
+                    min: None,
+                },
+            )
+        })
+        .collect();
+    // Members who share nothing this period can't absorb an excess: their weight is 0.
+    let fixed = limited(&capped, total, &weights, RoundingCtx { seq, payer: None })?;
+    let mut out = BTreeMap::new();
+    for (m, new) in fixed {
+        let old = totals.get(&m).copied().unwrap_or(0).max(0);
+        if new != old {
+            out.insert(m, new - old);
+        }
+    }
+    Ok(out)
 }
 
 fn itemized(
@@ -582,6 +640,26 @@ mod tests {
         }
         assert_eq!(
             split(&r, &SplitInput::amount(500)),
+            Err(SplitError::LimitsInfeasible)
+        );
+    }
+
+    #[test]
+    fn a_period_cap_moves_the_excess_at_close() {
+        let mut r = Rule::new("Utilities", Method::Equal, &[A, B, C]);
+        r.period_caps.insert(A, 10_000);
+        let totals = map(&[(A, 15_000), (B, 15_000), (C, 15_000)]);
+        let adj = period_cap_adjustment(&r, &totals, 0).unwrap();
+        assert_eq!(adj, map(&[(A, -5000), (B, 2500), (C, 2500)]));
+        assert_eq!(adj.values().sum::<Cents>(), 0);
+        // under the cap: nothing to post
+        let low = map(&[(A, 9000), (B, 9000), (C, 9000)]);
+        assert!(period_cap_adjustment(&r, &low, 0).unwrap().is_empty());
+        // everyone capped below the total: refused
+        r.period_caps.insert(B, 1);
+        r.period_caps.insert(C, 1);
+        assert_eq!(
+            period_cap_adjustment(&r, &totals, 0),
             Err(SplitError::LimitsInfeasible)
         );
     }

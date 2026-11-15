@@ -25,6 +25,10 @@ pub enum Posting {
         paid: Paid,
         shares: BTreeMap<MemberId, Cents>,
     },
+    /// A correction that moves amounts between members without new money: per-period cap
+    /// excess, or a correction to a closed period. The amounts add up to zero; a positive
+    /// amount is more owed by that member.
+    Adjustment { shares: BTreeMap<MemberId, Cents> },
     /// A settle-up payment from one member to another.
     Payment {
         from: MemberId,
@@ -75,6 +79,14 @@ impl Balances {
                     for (m, v) in shares {
                         next.add(*m, -*v)?;
                     }
+                }
+            }
+            Posting::Adjustment { shares } => {
+                if shares.values().sum::<Cents>() != 0 {
+                    return Err(SplitError::AdjustmentNotZeroSum);
+                }
+                for (m, v) in shares {
+                    next.add(*m, -*v)?;
                 }
             }
             Posting::Payment { from, to, amount } => {
@@ -225,6 +237,22 @@ mod tests {
                 amount: 0
             })
             .is_err());
+    }
+
+    #[test]
+    fn adjustments_move_amounts_and_must_sum_to_zero() {
+        let mut b = Balances::new();
+        b.apply(&Posting::Adjustment {
+            shares: [(A, -500), (B, 500)].into_iter().collect(),
+        })
+        .unwrap();
+        assert_eq!((b.get(A), b.get(B)), (500, -500));
+        assert_eq!(
+            b.apply(&Posting::Adjustment {
+                shares: [(A, 1)].into_iter().collect()
+            }),
+            Err(SplitError::AdjustmentNotZeroSum)
+        );
     }
 
     #[test]

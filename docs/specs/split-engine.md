@@ -33,7 +33,13 @@ error, never a silent zero), and no input may name someone outside the rule.
 Per member, per entry, for the weighted methods (not exact amounts or itemized). A member
 over a cap is fixed at the cap and the rest is re-divided among the others by the same
 weights; floors likewise. If no division can meet them, the entry is refused. For a refund
-they limit the size of the refund share. (Per-period caps come with the period engine.)
+they limit the size of the refund share.
+
+**Per-period caps** (a rule's `period_caps`) apply when a period closes: given each member's
+total share under the rule in the period, a member over their cap is brought down to it and
+the excess moves to the others in proportion to their own totals. The result is a zero-sum
+adjustment posting; balances still sum to zero. Members who shared nothing that period
+absorb nothing; if no one can absorb the excess, closing is refused.
 
 ## Rounding
 
@@ -71,6 +77,25 @@ own choice, else its category's default, else the agreement's fallback.
 - Spending: pay in, spend (each member's equity falls by their share). A bill the pot
   can't cover is refused (Block) or split into a pot part and a member-paid part (Debts).
 - Interest: a book setting in basis points a year, default 0; credited by stake.
+
+## Periods
+
+| Schedule | Settings |
+|---|---|
+| Weekly | start day of the week; every 1–4 weeks |
+| Monthly | the 1st–28th or the last day; every 1, 2, 3, 6 or 12 months |
+| Every N days | 1–365 |
+| Custom | period end dates, in order |
+
+- Every schedule has a start date; if it isn't on the schedule's rhythm, the first period is
+  a short one up to the first regular start. Periods tile the calendar: no gaps, no overlaps.
+- A schedule change takes effect the day after the current period ends; changing again
+  before then replaces the pending change.
+- An entry tagged to a special event counts only in the event (its date must be inside the
+  event); otherwise it counts in the period containing its date.
+- Recurring bills use the same schedules: their due dates are the schedule's starts.
+- A period that has ended is ready to close; late entries are accepted for a grace period
+  (default 7 days, a book setting).
 
 ## Joining and leaving
 

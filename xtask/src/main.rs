@@ -32,7 +32,11 @@ fn main() -> ExitCode {
 }
 
 fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    // At run time, not build time: a shared target folder may hold an xtask built from
+    // another checkout.
+    let manifest =
+        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").into());
+    Path::new(&manifest)
         .parent()
         .expect("xtask sits in the workspace")
         .to_path_buf()
