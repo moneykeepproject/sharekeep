@@ -64,7 +64,9 @@ pairing code copied from MoneyKeep).
   history has a `restore` continuing from a record this device has unchanged, the sync
   answers `Restored` with an offer instead (which records aren't in the backup);
   `accept_restore` drops the device's later records, fetches the hub's, and the app then
-  submits `restore-accept`. Until then the device sends nothing. "Last synced" is kept for
+  submits `restore-accept`. Until then the device sends nothing. A record whose kind isn't in
+  `sk_ledger::KINDS` (the hub runs a newer ShareKeep) stops the sync: the device keeps the
+  history up to the record before it and says to update ShareKeep. "Last synced" is kept for
   the offline banner and "This device last saw record N on <date>".
 
 ## Later (milestone 4)

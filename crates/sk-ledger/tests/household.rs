@@ -543,3 +543,24 @@ fn replay_gives_the_same_state_and_skips_what_no_longer_applies() {
     assert_eq!(skipped.len(), 1);
     assert_eq!(skipped[0].0, bad.seq);
 }
+
+#[test]
+fn every_listed_kind_is_understood_and_no_other() {
+    let l = sk_ledger::Ledger::new();
+    let rec = |kind: &str| sk_chain::Record {
+        seq: 1,
+        ts: 0,
+        author: sk_chain::Author::hub(),
+        kind: kind.into(),
+        body: serde_json::json!({}),
+        prev: sk_chain::Hash::ZERO,
+        hash: sk_chain::Hash::ZERO,
+    };
+    for k in sk_ledger::KINDS {
+        if let Err(e) = l.check(&rec(k)) {
+            assert!(!e.0.contains("doesn't know"), "{k}: {}", e.0);
+        }
+    }
+    let e = l.check(&rec("teleport")).unwrap_err();
+    assert!(e.0.contains("doesn't know"));
+}

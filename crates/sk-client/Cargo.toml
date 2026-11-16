@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 sk-core.workspace = true
 sk-chain.workspace = true
+sk-ledger.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

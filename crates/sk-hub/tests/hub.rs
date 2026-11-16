@@ -910,3 +910,47 @@ fn the_web_app_can_verify_the_book_and_export_a_period() {
         404
     );
 }
+
+#[test]
+fn a_device_stops_at_a_record_kind_it_does_not_know() {
+    let mut h = hub();
+    let (book, file) = household(&h, true, None);
+    let code = pairing_code(&h, &book, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    sam.submit_now("expense", &expense(100, 2)).unwrap();
+    // a newer ShareKeep on the hub writes a kind this version doesn't have
+    h.running.take().unwrap().stop();
+    let path = h.data.join("books").join(&file);
+    let before = {
+        let mut s = sk_store::Store::open(&path, None).unwrap();
+        let before = s.head().unwrap();
+        s.append(
+            5,
+            sk_chain::Author::hub(),
+            "teleport",
+            json!({"to": "Mars"}),
+        )
+        .unwrap();
+        before
+    };
+    h.running = Some(sk_hub::start(options(&h.data, &h.clock)).unwrap());
+    let sam = Client::new(h.address(), sam.token().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let mut replica = Replica::open(dir.path()).unwrap();
+    match replica.sync(&sam, 1) {
+        Err(e @ SyncError::NeedsUpdate { .. }) => {
+            assert!(
+                e.to_string().contains("Update ShareKeep on this device"),
+                "{e}"
+            );
+        }
+        other => panic!("expected NeedsUpdate, got {other:?}"),
+    }
+    // everything before it is kept, and the next sync stops at the same place
+    assert_eq!(replica.head(), Some(before));
+    assert!(matches!(
+        replica.sync(&sam, 2),
+        Err(SyncError::NeedsUpdate { .. })
+    ));
+    assert_eq!(Replica::open(dir.path()).unwrap().head(), Some(before));
+}

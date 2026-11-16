@@ -4571,6 +4571,7 @@ dependencies = [
  "sha2",
  "sk-chain",
  "sk-core",
+ "sk-ledger",
  "tempfile",
  "windows-sys 0.61.2",
  "zeroize",

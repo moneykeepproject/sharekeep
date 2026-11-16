@@ -44,7 +44,11 @@ What `sk-chain` and `sk-store` must do. From the owner's "ShareKeep Design Spec 
   atomically and keeps the previous file as `<file>.prev`. A failed save puts the
   in-memory book back to the last saved file.
 - Schema migrations run in order in one transaction; a book from a newer ShareKeep is
-  refused with a message to update. A SQLite file that isn't a ShareKeep book is refused
+  refused with a message to update. Book version 3 (no table change) marks that the history
+  may hold record kinds a version-2 ShareKeep doesn't know (`recurring`, `restore`,
+  `restore-accept`), so an older version refuses the book instead of skipping records.
+  Opening for recovery (a broken book, a backup) never upgrades or otherwise changes the
+  file; a restored copy is upgraded when it opens. A SQLite file that isn't a ShareKeep book is refused
   and left untouched.
 - Backups go to a folder as `<name> backup <label>.sharekeep` (encrypted books stay
   encrypted); a restore makes a separate copy `<name> restored <label>.sharekeep` and never

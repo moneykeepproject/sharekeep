@@ -241,6 +241,32 @@ impl Agreement {
     }
 }
 
+/// Every record kind this version of ShareKeep understands. A device that meets any other
+/// kind stops syncing and asks to be updated rather than leave the record out and show wrong
+/// balances (book files carry a version for the same reason: `sk_store::SCHEMA_VERSION`).
+pub const KINDS: &[&str] = &[
+    sk_chain::GENESIS,
+    sk_chain::SEAL,
+    "setting",
+    "member-add",
+    "agreement-add",
+    "schedule",
+    "rule-proposal",
+    "member-leave",
+    "approval",
+    "member-join",
+    "expense",
+    "recurring",
+    "restore",
+    "restore-accept",
+    "payment",
+    "entry-edit",
+    "entry-delete",
+    "dispute",
+    "deposit",
+    "period-close",
+];
+
 /// A book's state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ledger {

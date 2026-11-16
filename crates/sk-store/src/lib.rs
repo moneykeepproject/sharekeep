@@ -34,7 +34,7 @@ pub use crypt::Secret;
 /// The file extension of a book.
 pub const EXTENSION: &str = "sharekeep";
 /// The schema this build writes.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 const FORMAT: &str = "sharekeep-book";
 
 /// Why a book can't be made, opened or changed.
@@ -449,6 +449,11 @@ const MIGRATIONS: &[&str] = &[
     // 1 → 2: which record a device's request made, so a resent request (an outbox
     // retry) never adds a second record
     "CREATE TABLE client_ids (client_id TEXT PRIMARY KEY, seq INTEGER NOT NULL);",
+    // 2 → 3: no table changes. The history may now hold record kinds a version-2 ShareKeep
+    // doesn't know (`recurring`, and in a Hyperbook `restore` and `restore-accept` after a
+    // guided recovery); an older ShareKeep refuses the book ("made by a newer ShareKeep")
+    // instead of skipping those records and showing wrong balances.
+    "INSERT OR REPLACE INTO meta (key, value) VALUES ('record_kinds', '3');",
 ];
 
 fn schema_version(conn: &Connection) -> StoreResult<u32> {
@@ -471,6 +476,14 @@ fn schema_version(conn: &Connection) -> StoreResult<u32> {
         .optional()?;
     v.and_then(|s| s.parse().ok())
         .ok_or_else(|| StoreError::Corrupt("the book has no version".into()))
+}
+
+/// A book from a newer ShareKeep can't be read, even for recovery.
+fn refuse_newer(conn: &Connection) -> StoreResult<()> {
+    match schema_version(conn)? {
+        v if v > SCHEMA_VERSION => Err(StoreError::NewerVersion { found: v }),
+        _ => Ok(()),
+    }
 }
 
 /// Bring the schema up to [`SCHEMA_VERSION`], in one transaction.
@@ -707,9 +720,9 @@ impl Store {
     /// verified first.
     pub fn open(path: &Path, secret: Option<&Secret>) -> StoreResult<Store> {
         let store = match book_kind(path)? {
-            BookKind::Plain => Store::open_plain(path)?,
+            BookKind::Plain => Store::open_plain(path, true)?,
             BookKind::Encrypted => {
-                Store::open_encrypted(path, secret.ok_or(StoreError::NeedsPassword)?)?
+                Store::open_encrypted(path, secret.ok_or(StoreError::NeedsPassword)?, true)?
             }
         };
         if store.info.hyperbook {
@@ -719,18 +732,21 @@ impl Store {
     }
 
     /// Open a book without checking its history, only to read it: a Hyperbook that won't open
-    /// (to list what a restore would lose, or export the broken history). Never used for a
-    /// book that's in use.
+    /// (to list what a restore would lose, or export the broken history), or a backup. The
+    /// file is left exactly as it is: an older book isn't brought up to this version. Never
+    /// used for a book that's in use.
     pub fn open_for_recovery(path: &Path, secret: Option<&Secret>) -> StoreResult<Store> {
         match book_kind(path)? {
-            BookKind::Plain => Store::open_plain(path),
+            BookKind::Plain => Store::open_plain(path, false),
             BookKind::Encrypted => {
-                Store::open_encrypted(path, secret.ok_or(StoreError::NeedsPassword)?)
+                Store::open_encrypted(path, secret.ok_or(StoreError::NeedsPassword)?, false)
             }
         }
     }
 
-    fn open_plain(path: &Path) -> StoreResult<Store> {
+    /// `upgrade`: bring an older book up to this version (false only for recovery, which
+    /// must not change the file).
+    fn open_plain(path: &Path, upgrade: bool) -> StoreResult<Store> {
         let mut conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -746,7 +762,11 @@ impl Store {
         if schema_version(&conn)? == 0 {
             return Err(StoreError::NotABook);
         }
-        migrate(&mut conn, MIGRATIONS)?;
+        if upgrade {
+            migrate(&mut conn, MIGRATIONS)?;
+        } else {
+            refuse_newer(&conn)?;
+        }
         let info = read_info(&conn, false)?;
         let head = last_record(&conn)?;
         Ok(Store {
@@ -760,7 +780,7 @@ impl Store {
         })
     }
 
-    fn open_encrypted(path: &Path, secret: &Secret) -> StoreResult<Store> {
+    fn open_encrypted(path: &Path, secret: &Secret, upgrade: bool) -> StoreResult<Store> {
         let mut file = options()
             .read(true)
             .write(true)
@@ -794,7 +814,9 @@ impl Store {
             })),
             fail_next_save: false,
         };
-        if schema_version(&store.conn)? < SCHEMA_VERSION {
+        if !upgrade {
+            refuse_newer(&store.conn)?;
+        } else if schema_version(&store.conn)? < SCHEMA_VERSION {
             migrate(&mut store.conn, MIGRATIONS)?;
             store.save()?;
         } else {
@@ -1254,7 +1276,7 @@ mod tests {
         let mut later = MIGRATIONS.to_vec();
         later.push("CREATE TABLE extra (x INTEGER);");
         migrate(&mut conn, &later).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 3);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION + 1);
         conn.execute("INSERT INTO extra (x) VALUES (1)", [])
             .unwrap();
     }

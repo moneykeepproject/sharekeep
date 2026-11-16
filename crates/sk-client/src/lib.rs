@@ -478,6 +478,12 @@ pub enum SyncError {
     /// The household restored a backup: the hub carries on from a point before this
     /// device's last record. The local copy is kept until the person accepts.
     Restored(RestoreOffer),
+    /// The hub's history has a record kind this version doesn't know: the hub runs a newer
+    /// ShareKeep. Nothing new is taken in until this device is updated.
+    NeedsUpdate {
+        seq: u64,
+        kind: String,
+    },
     Local(String),
 }
 
@@ -523,6 +529,11 @@ impl fmt::Display for SyncError {
                 write!(f, "The hub sent a history that doesn't check out ({b}).")
             }
             SyncError::Restored(o) => write!(f, "{}", o.text()),
+            SyncError::NeedsUpdate { seq, kind } => write!(
+                f,
+                "The hub runs a newer ShareKeep: record {seq} is a \"{kind}\" this version doesn't know. Update ShareKeep on this device; until then it shows the history up to record {}.",
+                seq.saturating_sub(1)
+            ),
             SyncError::Local(e) => write!(f, "{e}"),
         }
     }
@@ -636,8 +647,21 @@ impl Replica {
                     rest
                 }
             };
-            added += fresh.len();
-            self.records.extend_from_slice(fresh);
+            // a kind this version doesn't know: keep what came before it, then stop
+            let known = fresh
+                .iter()
+                .position(|r| !sk_ledger::KINDS.contains(&r.kind.as_str()))
+                .unwrap_or(fresh.len());
+            added += known;
+            self.records.extend_from_slice(&fresh[..known]);
+            if let Some(r) = fresh.get(known) {
+                self.meta.head = self.records.last().map(Record::head);
+                self.save().map_err(SyncError::Local)?;
+                return Err(SyncError::NeedsUpdate {
+                    seq: r.seq,
+                    kind: r.kind.clone(),
+                });
+            }
             self.meta.head = self.records.last().map(Record::head);
             if (page.len() as u64) < PAGE {
                 break;
