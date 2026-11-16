@@ -3,9 +3,9 @@
 Keep a household's shared money: partners, roommates, or a parent and an adult child
 sharing a home. Part of the MoneyKeep family (Rust + Slint).
 
-**Status: in development.** Milestones 1–3 and 4a: the split engine, the Hyperbook chain, the
-book files, the household service and its client, the agreement engine and statement PDFs.
-There is no desktop app yet.
+**Status: in development.** Milestones 1–4b: the split engine, the Hyperbook chain, the book
+files, the household service and its client, the agreement engine and statement PDFs, and the
+desktop app for Windows and macOS. Not yet: the web app for phones, installers, releases.
 
 ## Build & test
 
@@ -13,7 +13,19 @@ There is no desktop app yet.
 cargo test --workspace      # the split engine and its property tests
 cargo xtask ci              # fmt, clippy -D warnings, tests, repository rules
 cargo run -p sk-chain --bin sk-verify -- history.jsonl   # check an exported Hyperbook history
+cargo run -p sharekeep-app --example screens -- shots    # headless screenshots of every screen
 ```
+
+Trying it on one computer (until 4d makes the hub a service with an installer):
+
+```sh
+cargo run -p sk-hub -- setup --data hubdata --address 192.168.1.20   # this computer's address
+cargo run -p sk-hub -- run --data hubdata                            # leave it running
+cargo run -p sharekeep-app -- --hub-data hubdata                     # the app, with the Hub tab
+```
+
+On the Hub tab: set the PIN, create a book, add people and an agreement, then make a pairing
+code. Other computers run `sharekeep` and type the hub's address, the code and the PIN.
 
 ## Layout
 
@@ -29,6 +41,8 @@ cargo run -p sk-chain --bin sk-verify -- history.jsonl   # check an exported Hyp
 | `crates/sk-report/` | Statement PDFs. |
 | `crates/sk-hub/` | The household service (`sharekeep-hub`): HTTPS on the home Wi-Fi with its own certificate authority, pairing (code + PIN), devices, records. |
 | `crates/sk-client/` | The desktop app's side: HTTPS to the hub, the offline outbox, the checked local copy of a book's history. |
+| `crates/sk-ui/` | The screens (Slint, the Capture look) and their view models; a sample household. |
+| `apps/sharekeep-app/` | The desktop app (`sharekeep`) for Windows and macOS: a background worker for the hub, file dialogs, settings. |
 | `xtask/` | `cargo xtask ci`, `workflows`, `guards`. |
 | `docs/specs/` | What the implemented parts must do. |
 
@@ -40,7 +54,7 @@ cargo run -p sk-chain --bin sk-verify -- history.jsonl   # check an exported Hyp
 | 2 (done) | `sk-chain` (Hyperbook hash chain), `sk-store` (SQLite book files) |
 | 3 (done) | `sk-hub` (household service, pairing), `sk-client` (API client, outbox) |
 | 4a (done) | `sk-ledger` (agreement engine), `sk-report` (statement PDFs), hub checks and seals |
-| 4b | `sk-ui`, `sharekeep-app` (Windows, macOS) |
+| 4b (done) | `sk-ui`, `sharekeep-app` (Windows, macOS) |
 | 4c | `sk-webapp` (phones and PC browsers) |
 | 4d | the hub as a service, OS-sealed keys, installers, release workflow, keep-launcher |
 

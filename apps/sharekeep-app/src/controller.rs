@@ -1,0 +1,1032 @@
+//! The UI thread's side: the book's state, the open sheets, and filling the screens.
+//! Everything slow goes to the [`crate::worker`] as a [`Job`].
+
+use crate::config::AppConfig;
+use crate::worker::{AdminThen, Job, Outcome};
+use chrono::{Datelike, NaiveDate};
+use serde_json::{json, Value};
+use sk_client::{Client, HubAddress};
+use sk_core::{AgreementId, Currency, MemberId, RuleId};
+use sk_ledger::{Ledger, ProposalKind};
+use sk_ui::view::{self, RuleDraft, EDITOR_METHODS};
+use sk_ui::*;
+use slint::{Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, VecModel};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::mpsc::Sender;
+
+pub struct State {
+    pub dir: PathBuf,
+    pub cfg: AppConfig,
+    pub jobs: Sender<Job>,
+    pub today: NaiveDate,
+    pub ledger: Ledger,
+    pub cur: Currency,
+    pub agreement: Option<AgreementId>,
+    pub found: Option<HubAddress>,
+    pub exp_payer: Option<MemberId>,
+    pub pay_from: Option<MemberId>,
+    pub pay_to: Option<MemberId>,
+    pub draft: Option<RuleDraft>,
+    pub pending: usize,
+    pub refused: Vec<String>,
+    pub problem: Option<String>,
+    pub offline: bool,
+    // the hub computer
+    pub is_hub: bool,
+    pub hub_book: Option<String>,
+    pub hub_ledger: Ledger,
+    pub hub_pick: BTreeSet<MemberId>,
+    seq: u64,
+}
+
+fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
+    ModelRc::new(VecModel::from(v))
+}
+
+fn s(t: impl AsRef<str>) -> SharedString {
+    SharedString::from(t.as_ref())
+}
+
+pub fn currency(code: &str) -> Currency {
+    Currency::ALL
+        .into_iter()
+        .find(|c| c.code() == code)
+        .unwrap_or(Currency::ALL[0])
+}
+
+pub fn today() -> NaiveDate {
+    chrono::Local::now().date_naive()
+}
+
+impl State {
+    pub fn new(dir: PathBuf, cfg: AppConfig, jobs: Sender<Job>, is_hub: bool) -> Self {
+        let cur = cfg
+            .book
+            .as_ref()
+            .map(|b| currency(&b.currency))
+            .unwrap_or(Currency::ALL[0]);
+        State {
+            dir,
+            cfg,
+            jobs,
+            today: today(),
+            ledger: Ledger::new(),
+            cur,
+            agreement: None,
+            found: None,
+            exp_payer: None,
+            pay_from: None,
+            pay_to: None,
+            draft: None,
+            pending: 0,
+            refused: Vec::new(),
+            problem: None,
+            offline: false,
+            is_hub,
+            hub_book: None,
+            hub_ledger: Ledger::new(),
+            hub_pick: BTreeSet::new(),
+            seq: 0,
+        }
+    }
+
+    pub fn me(&self) -> MemberId {
+        MemberId(self.cfg.member.unwrap_or(0))
+    }
+
+    fn send(&self, job: Job) {
+        let _ = self.jobs.send(job);
+    }
+
+    fn client_id(&mut self) -> String {
+        self.seq += 1;
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        format!("app-{ms}-{}", self.seq)
+    }
+
+    /// The local folder for the paired book's copy and outbox.
+    pub fn book_dir(&self) -> PathBuf {
+        let id = self.cfg.book.as_ref().map_or("book", |b| b.id.as_str());
+        self.dir.join("books").join(id)
+    }
+
+    /// Start using the saved pairing.
+    pub fn connect(&self) {
+        if let (Some(hub), Some(token)) = (self.cfg.hub.clone(), self.cfg.token.clone()) {
+            self.send(Job::Connect {
+                client: Client::new(hub, token),
+                book_dir: self.book_dir(),
+            });
+        }
+    }
+
+    // ----- answers from the worker ---------------------------------------------------------
+
+    pub fn on_outcome(&mut self, ui: &AppWindow, o: Outcome) {
+        ui.set_busy(false);
+        match o {
+            Outcome::Found(Ok((hub, fp))) => {
+                self.found = Some(hub);
+                ui.set_hub_fingerprint(s(fp));
+                ui.set_connect_error(s(""));
+            }
+            Outcome::Found(Err(e)) => {
+                self.found = None;
+                ui.set_hub_fingerprint(s(""));
+                ui.set_connect_error(s(e));
+            }
+            Outcome::Paired(Ok((client, answer))) => {
+                self.cfg.hub = Some(client.hub.clone());
+                self.cfg.token = client.token().map(str::to_string);
+                self.cfg.member = Some(answer.member);
+                self.cur = currency(&answer.book.currency);
+                self.cfg.book = Some(answer.book);
+                self.cfg.device_name = Some(ui.get_device_name().to_string());
+                if let Err(e) = self.cfg.save(&self.dir) {
+                    ui.set_connect_error(s(e));
+                    return;
+                }
+                ui.set_connect_pin(s(""));
+                ui.set_connect_code(s(""));
+                ui.set_page(1);
+                self.connect();
+            }
+            Outcome::Paired(Err(e)) => ui.set_connect_error(s(e)),
+            Outcome::Synced(sync) => {
+                if let Some(records) = sync.records {
+                    self.ledger = Ledger::replay(&records).0;
+                }
+                self.pending = sync.pending;
+                self.refused = sync.refused;
+                self.problem = sync.problem;
+                self.offline = sync.offline;
+            }
+            Outcome::Sent(Ok(m)) | Outcome::Admin(AdminThen::Done(m), Ok(_)) => {
+                if !m.is_empty() {
+                    toast(ui, &m);
+                }
+                if self.is_hub {
+                    self.hub_status();
+                }
+            }
+            Outcome::Sent(Err(e)) => toast(ui, &e),
+            Outcome::Saved(Ok(p)) => toast(ui, &format!("Saved {}", p.display())),
+            Outcome::Saved(Err(e)) => toast(ui, &e),
+            Outcome::Admin(then, Ok(v)) => self.on_admin(ui, then, v),
+            Outcome::Admin(_, Err(e)) => {
+                ui.set_hub_error(s(e));
+            }
+        }
+        self.refresh(ui);
+    }
+
+    fn on_admin(&mut self, ui: &AppWindow, then: AdminThen, v: Value) {
+        ui.set_hub_error(s(""));
+        match then {
+            AdminThen::Status => {
+                let books: Vec<BookS> = v["books"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|b| {
+                        let open = b["open"].as_bool().unwrap_or(false);
+                        let mut detail = Vec::new();
+                        if b["hyperbook"].as_bool() == Some(true) {
+                            detail.push("Hyperbook".to_string());
+                        }
+                        if b["encrypted"].as_bool() == Some(true) {
+                            detail.push("encrypted".into());
+                        }
+                        if !open {
+                            detail.push(
+                                b["problem"]
+                                    .as_str()
+                                    .unwrap_or("locked: type its password")
+                                    .to_string(),
+                            );
+                        }
+                        BookS {
+                            file: s(b["file"].as_str().unwrap_or("")),
+                            name: s(b["name"].as_str().unwrap_or("(locked book)")),
+                            detail: s(detail.join(" · ")),
+                            open,
+                        }
+                    })
+                    .collect();
+                let first_open = v["books"]
+                    .as_array()
+                    .and_then(|a| a.iter().find(|b| b["open"] == true))
+                    .and_then(|b| b["id"].as_str())
+                    .map(str::to_string);
+                if self.hub_book.is_none() || first_open.is_none() {
+                    self.hub_book = first_open;
+                }
+                ui.set_hub_books(model(books));
+                let pin = if v["pin_set"] == true {
+                    "PIN set"
+                } else {
+                    "No PIN yet: set one before pairing"
+                };
+                ui.set_hub_info(s(format!(
+                    "Hub at {} · certificate {} · {}",
+                    v["address"].as_str().unwrap_or("?"),
+                    v["fingerprint"].as_str().unwrap_or("?"),
+                    pin
+                )));
+                if let Some(id) = self.hub_book.clone() {
+                    self.send(Job::Admin {
+                        method: "GET",
+                        path: format!("/admin/v1/books/{id}/records"),
+                        body: None,
+                        then: AdminThen::Records,
+                    });
+                }
+                self.send(Job::Admin {
+                    method: "GET",
+                    path: "/admin/v1/devices".into(),
+                    body: None,
+                    then: AdminThen::Devices,
+                });
+            }
+            AdminThen::Records => {
+                let records: Vec<sk_chain::Record> =
+                    serde_json::from_value(v["records"].clone()).unwrap_or_default();
+                self.hub_ledger = Ledger::replay(&records).0;
+            }
+            AdminThen::Devices => {
+                let list: Vec<DeviceS> = v["devices"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|d| {
+                        let member = d["member"].as_u64().unwrap_or(0) as u32;
+                        let who = self
+                            .hub_ledger
+                            .members
+                            .get(&MemberId(member))
+                            .cloned()
+                            .unwrap_or_else(|| format!("member {member}"));
+                        let revoked = !d["revoked"].is_null();
+                        DeviceS {
+                            id: d["id"].as_i64().unwrap_or(0) as i32,
+                            name: s(d["name"].as_str().unwrap_or("")),
+                            detail: s(if revoked {
+                                format!("{who} · removed")
+                            } else {
+                                who
+                            }),
+                            revoked,
+                        }
+                    })
+                    .collect();
+                ui.set_hub_devices(model(list));
+            }
+            AdminThen::Code => {
+                let url = v["url"].as_str().unwrap_or("").to_string();
+                ui.set_hub_code(s(v["code"].as_str().unwrap_or("")));
+                ui.set_hub_code_detail(s(format!(
+                    "Works once, for 10 minutes. Certificate page: {}",
+                    v["certificate_page"].as_str().unwrap_or("")
+                )));
+                ui.set_hub_qr(qr_image(&url));
+            }
+            AdminThen::BookMade => {
+                let name = v["book"]["name"].as_str().unwrap_or("The book");
+                let msg = match v["recovery_key"].as_str() {
+                    Some(k) => format!(
+                        "{name} was created. Its recovery key is {k} — write it down and keep it somewhere safe: it is shown only now, and it opens the book if the password is lost."
+                    ),
+                    None => format!("{name} was created."),
+                };
+                self.hub_book = v["book"]["id"].as_str().map(str::to_string);
+                ui.set_new_book_name(s(""));
+                ui.set_new_book_password(s(""));
+                ui.set_new_book_hyperbook(false);
+                ui.set_hub_info(s(msg));
+                self.hub_status_keep_info();
+            }
+            AdminThen::Done(_) => {}
+        }
+    }
+
+    pub fn hub_status(&self) {
+        if self.is_hub {
+            self.send(Job::Admin {
+                method: "GET",
+                path: "/admin/v1/status".into(),
+                body: None,
+                then: AdminThen::Status,
+            });
+        }
+    }
+
+    /// Refresh the lists but keep the message on screen (the recovery key).
+    fn hub_status_keep_info(&self) {
+        if let Some(id) = &self.hub_book {
+            self.send(Job::Admin {
+                method: "GET",
+                path: format!("/admin/v1/books/{id}/records"),
+                body: None,
+                then: AdminThen::Records,
+            });
+        }
+    }
+
+    // ----- filling the screens ---------------------------------------------------------------
+
+    pub fn refresh(&mut self, ui: &AppWindow) {
+        let l = &self.ledger;
+        let me = self.me();
+        let cur = self.cur;
+        ui.set_is_hub(self.is_hub);
+        ui.set_book_name(s(self.cfg.book.as_ref().map_or("", |b| b.name.as_str())));
+        ui.set_me_name(s(l.members.get(&me).cloned().unwrap_or_default()));
+        ui.set_pending(self.pending as i32);
+        ui.set_offline(self.offline);
+        ui.set_banner(s(match (&self.problem, self.offline) {
+            (Some(_), true) => "Offline: the household hub can't be reached. New expenses, payments and approvals wait here and are sent when you're home.".to_string(),
+            (Some(p), false) => p.clone(),
+            (None, _) => String::new(),
+        }));
+        ui.set_refused(model(self.refused.iter().map(s).collect()));
+
+        let cards = view::agreements(l, me, cur, self.today)
+            .into_iter()
+            .map(|c| CardS {
+                id: c.id.0 as i32,
+                name: s(c.name),
+                headline: s(c.headline),
+                sign: c.sign,
+                members: model(c.members.into_iter().map(member_s).collect()),
+                period: s(c.period),
+                waiting: c.waiting as i32,
+            })
+            .collect();
+        ui.set_cards(model(cards));
+        ui.set_approvals(model(
+            view::approvals(l, me)
+                .into_iter()
+                .map(|a| ApprovalS {
+                    seq: a.seq as i32,
+                    title: s(a.title),
+                    detail: s(a.detail),
+                })
+                .collect(),
+        ));
+
+        if let Some(a) = self.agreement {
+            let ag = l.agreements.get(&a);
+            ui.set_agreement_name(s(ag.map_or("", |g| g.name.as_str())));
+            ui.set_agreement_period(s(ag
+                .and_then(|g| g.schedule.period_containing(self.today))
+                .map(|p| format!("{} – {}", p.first.format("%b %-d"), p.last.format("%b %-d")))
+                .unwrap_or_default()));
+            ui.set_activity(model(
+                view::activity(l, a, me, cur)
+                    .into_iter()
+                    .map(|r| ActivityS {
+                        seq: r.seq as i32,
+                        date: s(r.date),
+                        title: s(r.title),
+                        detail: s(r.detail),
+                        amount: s(r.amount),
+                        disputed: r.disputed,
+                        editable: r.editable,
+                    })
+                    .collect(),
+            ));
+            ui.set_rules(model(
+                view::rules(l, a, self.today)
+                    .into_iter()
+                    .map(|r| RuleS {
+                        id: r.id.0 as i32,
+                        name: s(r.name),
+                        method: s(r.method),
+                        detail: s(r.detail),
+                    })
+                    .collect(),
+            ));
+            let (members, settle) = view::members(l, a, cur);
+            ui.set_members(model(members.into_iter().map(member_s).collect()));
+            ui.set_settle(model(settle.into_iter().map(s).collect()));
+            ui.set_periods(model(
+                view::periods(l, a, self.today, 5)
+                    .into_iter()
+                    .map(|p| PeriodS {
+                        key: s(p.first.to_string()),
+                        label: s(p.label),
+                        state: s(p.state),
+                        closed: p.closed,
+                        can_close: p.can_close,
+                    })
+                    .collect(),
+            ));
+        }
+        self.refresh_expense(ui);
+        self.refresh_payment(ui);
+        self.refresh_rule(ui);
+        self.refresh_hub(ui);
+    }
+
+    fn agreement_members(&self) -> Vec<(MemberId, String)> {
+        self.agreement
+            .and_then(|a| self.ledger.agreements.get(&a))
+            .map(|g| {
+                g.members
+                    .iter()
+                    .filter(|(_, m)| m.left.is_none())
+                    .map(|(id, _)| {
+                        (
+                            *id,
+                            self.ledger.members.get(id).cloned().unwrap_or_default(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn chips(&self, chosen: Option<MemberId>) -> ModelRc<ChoiceS> {
+        model(
+            self.agreement_members()
+                .into_iter()
+                .map(|(id, name)| ChoiceS {
+                    id: id.0 as i32,
+                    label: s(name),
+                    on: chosen == Some(id),
+                })
+                .collect(),
+        )
+    }
+
+    // ----- the expense sheet -----
+
+    pub fn open_expense(&mut self, ui: &AppWindow) {
+        self.exp_payer = Some(self.me());
+        ui.set_exp_amount(s(""));
+        ui.set_exp_category(s(""));
+        ui.set_exp_note(s(""));
+        ui.set_exp_date(s(self.today.to_string()));
+        ui.set_exp_open(true);
+        self.refresh_expense(ui);
+    }
+
+    fn expense_body(&self, ui: &AppWindow) -> Result<sk_ledger::bodies::Expense, String> {
+        let a = self.agreement.ok_or("Open an agreement first.")?;
+        let amount = self
+            .cur
+            .parse(ui.get_exp_amount().trim())
+            .filter(|v| *v > 0)
+            .ok_or("Type the amount, like 12.50.")?;
+        let date = NaiveDate::parse_from_str(ui.get_exp_date().trim(), "%Y-%m-%d")
+            .map_err(|_| "Type the date as YYYY-MM-DD.")?;
+        let category = ui.get_exp_category().trim().to_string();
+        if category.is_empty() {
+            return Err("Type a category, like Groceries.".into());
+        }
+        Ok(view::expense_body(
+            a,
+            date,
+            amount,
+            self.exp_payer.unwrap_or(self.me()),
+            &category,
+            &ui.get_exp_note(),
+        ))
+    }
+
+    fn refresh_expense(&self, ui: &AppWindow) {
+        if !ui.get_exp_open() {
+            return;
+        }
+        ui.set_exp_payers(self.chips(self.exp_payer));
+        let r = self
+            .expense_body(ui)
+            .and_then(|e| view::preview(&self.ledger, self.me(), self.cur, e));
+        match r {
+            Ok(rows) => {
+                ui.set_exp_preview(model(rows.into_iter().map(split_s).collect()));
+                ui.set_exp_error(s(""));
+            }
+            Err(e) => {
+                ui.set_exp_preview(model(Vec::new()));
+                ui.set_exp_error(s(e));
+            }
+        }
+    }
+
+    pub fn payer_picked(&mut self, ui: &AppWindow, id: i32) {
+        self.exp_payer = Some(MemberId(id as u32));
+        self.refresh_expense(ui);
+    }
+
+    pub fn save_expense(&mut self, ui: &AppWindow) {
+        match self.expense_body(ui) {
+            Ok(e) => {
+                ui.set_exp_open(false);
+                self.send(Job::Send {
+                    kind: "expense".into(),
+                    body: serde_json::to_value(e).unwrap_or_default(),
+                });
+            }
+            Err(e) => ui.set_exp_error(s(e)),
+        }
+    }
+
+    // ----- the payment sheet -----
+
+    pub fn open_payment(&mut self, ui: &AppWindow) {
+        let me = self.me();
+        self.pay_from = Some(me);
+        self.pay_to = self
+            .agreement_members()
+            .into_iter()
+            .map(|(m, _)| m)
+            .find(|m| *m != me);
+        // suggest what settles me up with them
+        let suggestion = self.agreement.and_then(|a| {
+            let b = self.ledger.balances(a);
+            sk_split::ledger::settle_up(&b)
+                .into_iter()
+                .find(|t| t.from == me)
+        });
+        if let Some(t) = &suggestion {
+            self.pay_to = Some(t.to);
+        }
+        ui.set_pay_amount(s(suggestion
+            .map(|t| self.cur.format_number(t.amount))
+            .unwrap_or_default()));
+        ui.set_pay_error(s(""));
+        ui.set_pay_open(true);
+        self.refresh_payment(ui);
+    }
+
+    fn refresh_payment(&self, ui: &AppWindow) {
+        if ui.get_pay_open() {
+            ui.set_pay_from(self.chips(self.pay_from));
+            ui.set_pay_to(self.chips(self.pay_to));
+        }
+    }
+
+    pub fn pay_picked(&mut self, ui: &AppWindow, from: bool, id: i32) {
+        if from {
+            self.pay_from = Some(MemberId(id as u32));
+        } else {
+            self.pay_to = Some(MemberId(id as u32));
+        }
+        self.refresh_payment(ui);
+    }
+
+    pub fn save_payment(&mut self, ui: &AppWindow) {
+        let (Some(a), Some(from), Some(to)) = (self.agreement, self.pay_from, self.pay_to) else {
+            return ui.set_pay_error(s("Pick who paid whom."));
+        };
+        if from == to {
+            return ui.set_pay_error(s("Pick two different people."));
+        }
+        let Some(amount) = self
+            .cur
+            .parse(ui.get_pay_amount().trim())
+            .filter(|v| *v > 0)
+        else {
+            return ui.set_pay_error(s("Type the amount, like 25.00."));
+        };
+        ui.set_pay_open(false);
+        self.send(Job::Send {
+            kind: "payment".into(),
+            body: json!({"agreement": a, "date": self.today, "from": from, "to": to, "amount": amount}),
+        });
+    }
+
+    // ----- the rule editor -----
+
+    pub fn open_rule(&mut self, ui: &AppWindow) {
+        let Some(a) = self.agreement else { return };
+        self.draft = Some(RuleDraft::new(&self.ledger, a));
+        ui.set_rule_name(s(""));
+        ui.set_rule_categories(s(""));
+        ui.set_rule_open(true);
+        self.refresh_rule(ui);
+    }
+
+    pub fn rule_edit(&mut self, ui: &AppWindow, f: impl FnOnce(&mut RuleDraft)) {
+        if let Some(d) = self.draft.as_mut() {
+            f(d);
+        }
+        self.refresh_rule(ui);
+    }
+
+    fn refresh_rule(&mut self, ui: &AppWindow) {
+        if !ui.get_rule_open() {
+            return;
+        }
+        let Some(d) = self.draft.as_mut() else { return };
+        d.name = ui.get_rule_name().to_string();
+        ui.set_rule_methods(model(
+            EDITOR_METHODS
+                .iter()
+                .enumerate()
+                .map(|(i, m)| ChoiceS {
+                    id: i as i32,
+                    label: s(m),
+                    on: d.method == i,
+                })
+                .collect(),
+        ));
+        ui.set_rule_percent(d.method == 1);
+        ui.set_rule_weights(model(
+            d.rows
+                .iter()
+                .map(|r| WeightS {
+                    name: s(&r.name),
+                    value: r.value,
+                    included: r.included,
+                    locked: r.locked,
+                })
+                .collect(),
+        ));
+        match view::examples(&d.rule(), &self.ledger, self.cur) {
+            Ok(ex) => {
+                ui.set_rule_error(s(""));
+                ui.set_rule_examples(model(
+                    ex.into_iter()
+                        .map(|(amount, rows)| ExampleS {
+                            amount: s(amount),
+                            rows: model(rows.into_iter().map(split_s).collect()),
+                        })
+                        .collect(),
+                ));
+            }
+            Err(e) => {
+                ui.set_rule_error(s(e));
+                ui.set_rule_examples(model(Vec::new()));
+            }
+        }
+    }
+
+    pub fn propose_rule(&mut self, ui: &AppWindow) {
+        let (Some(a), Some(d)) = (self.agreement, self.draft.as_ref()) else {
+            return;
+        };
+        // a new rule id; it takes effect with the next period
+        let next_id = self
+            .ledger
+            .proposals
+            .values()
+            .filter_map(|p| match &p.kind {
+                ProposalKind::Rule(r) if r.agreement == a => Some(r.rule_id.0),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let effective = self
+            .ledger
+            .agreements
+            .get(&a)
+            .and_then(|g| g.schedule.period_containing(self.today))
+            .and_then(|p| p.last.succ_opt())
+            .unwrap_or(self.today);
+        let categories: Vec<String> = ui
+            .get_rule_categories()
+            .split(',')
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect();
+        let body = d.proposal(a, RuleId(next_id), effective, &categories);
+        ui.set_rule_open(false);
+        self.send(Job::Send {
+            kind: "rule-proposal".into(),
+            body,
+        });
+    }
+
+    // ----- other actions -----
+
+    pub fn approve(&self, seq: i32, yes: bool) {
+        self.send(Job::Send {
+            kind: "approval".into(),
+            body: json!({"proposal": seq, "approve": yes}),
+        });
+    }
+
+    pub fn close_period(&self, first: &str) {
+        if let Some(a) = self.agreement {
+            self.send(Job::Send {
+                kind: "period-close".into(),
+                body: json!({"agreement": a, "date": first}),
+            });
+        }
+    }
+
+    pub fn statement(&self, ui: &AppWindow, first: String) {
+        let Some(a) = self.agreement else { return };
+        let name = self
+            .ledger
+            .agreements
+            .get(&a)
+            .map_or("Statement".to_string(), |g| g.name.clone());
+        let suggested = format!("{name} statement {first}.pdf");
+        let jobs = self.jobs.clone();
+        crate::dialogs::save_file(
+            ui.window(),
+            "Save the statement",
+            &suggested,
+            ("PDF", &["pdf"]),
+            move |path| {
+                if let Some(path) = path {
+                    let _ = jobs.send(Job::Statement {
+                        agreement: a.0,
+                        first,
+                        path,
+                    });
+                }
+            },
+        );
+    }
+
+    pub fn delete_entry(&self, seq: i32) {
+        self.send(Job::Send {
+            kind: "entry-delete".into(),
+            body: json!({"target": seq}),
+        });
+    }
+
+    pub fn dispute_entry(&self, seq: i32) {
+        let disputed = self
+            .ledger
+            .entries
+            .get(&(seq as u64))
+            .is_some_and(|e| e.disputed);
+        self.send(Job::Send {
+            kind: "dispute".into(),
+            body: json!({"target": seq, "resolved": disputed}),
+        });
+    }
+
+    pub fn sync(&self) {
+        self.send(Job::Sync);
+    }
+
+    pub fn dismiss_refused(&self) {
+        self.send(Job::DismissRefused);
+    }
+
+    pub fn find_hub(&self, ui: &AppWindow) {
+        ui.set_busy(true);
+        ui.set_connect_error(s(""));
+        self.send(Job::FindHub(ui.get_hub_address().to_string()));
+    }
+
+    pub fn pair(&self, ui: &AppWindow) {
+        let Some(hub) = self.found.clone() else {
+            return ui.set_connect_error(s("Find the hub first."));
+        };
+        let device = ui.get_device_name().trim().to_string();
+        if device.is_empty() {
+            return ui.set_connect_error(s("Name this device, like Sam's laptop."));
+        }
+        ui.set_busy(true);
+        self.send(Job::Pair {
+            hub,
+            code: ui.get_connect_code().replace(['-', ' '], "").to_uppercase(),
+            pin: ui.get_connect_pin().to_string(),
+            device,
+        });
+    }
+
+    // ----- the hub computer -----
+
+    fn refresh_hub(&self, ui: &AppWindow) {
+        if !self.is_hub {
+            return;
+        }
+        let members: Vec<(MemberId, String)> = self
+            .hub_ledger
+            .members
+            .iter()
+            .map(|(id, n)| (*id, n.clone()))
+            .collect();
+        ui.set_hub_members(model(
+            members
+                .iter()
+                .map(|(id, n)| ChoiceS {
+                    id: id.0 as i32,
+                    label: s(n),
+                    on: false,
+                })
+                .collect(),
+        ));
+        ui.set_hub_agreement_members(model(
+            members
+                .iter()
+                .map(|(id, n)| ChoiceS {
+                    id: id.0 as i32,
+                    label: s(n),
+                    on: self.hub_pick.contains(id),
+                })
+                .collect(),
+        ));
+    }
+
+    fn admin(&self, method: &'static str, path: String, body: Option<Value>, then: AdminThen) {
+        self.send(Job::Admin {
+            method,
+            path,
+            body,
+            then,
+        });
+    }
+
+    fn hub_record(&mut self, ui: &AppWindow, kind: &str, body: Value, done: &str) {
+        let Some(id) = self.hub_book.clone() else {
+            return ui.set_hub_error(s("Create or unlock a book first."));
+        };
+        let client_id = self.client_id();
+        self.admin(
+            "POST",
+            format!("/admin/v1/books/{id}/records"),
+            Some(json!({"client_id": client_id, "kind": kind, "body": body})),
+            AdminThen::Done(done.into()),
+        );
+    }
+
+    pub fn hub_set_pin(&self, ui: &AppWindow) {
+        let pin = ui.get_hub_pin().trim().to_string();
+        ui.set_hub_pin(s(""));
+        self.admin(
+            "POST",
+            "/admin/v1/pin".into(),
+            Some(json!({ "pin": pin })),
+            AdminThen::Done("The household PIN is set.".into()),
+        );
+    }
+
+    pub fn hub_new_book(&self, ui: &AppWindow) {
+        let name = ui.get_new_book_name().trim().to_string();
+        if name.is_empty() {
+            return ui.set_hub_error(s("Name the book, like Home."));
+        }
+        let password = ui.get_new_book_password().to_string();
+        let password = (!password.is_empty()).then_some(password);
+        self.admin(
+            "POST",
+            "/admin/v1/books".into(),
+            Some(json!({
+                "name": name,
+                "hyperbook": ui.get_new_book_hyperbook(),
+                "recovery_key": password.is_some(),
+                "password": password,
+            })),
+            AdminThen::BookMade,
+        );
+    }
+
+    pub fn hub_unlock(&self, ui: &AppWindow, file: &str) {
+        let password = ui.get_unlock_password().to_string();
+        ui.set_unlock_password(s(""));
+        self.admin(
+            "POST",
+            format!("/admin/v1/books/{file}/unlock"),
+            Some(json!({ "password": password })),
+            AdminThen::Done("The book is open.".into()),
+        );
+    }
+
+    pub fn hub_add_member(&mut self, ui: &AppWindow) {
+        let name = ui.get_new_member_name().trim().to_string();
+        if name.is_empty() {
+            return ui.set_hub_error(s("Type the person's name."));
+        }
+        let id = self
+            .hub_ledger
+            .members
+            .keys()
+            .map(|m| m.0)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        ui.set_new_member_name(s(""));
+        self.hub_record(
+            ui,
+            "member-add",
+            json!({"id": id, "name": name}),
+            &format!("{name} was added."),
+        );
+    }
+
+    pub fn hub_member_picked(&mut self, ui: &AppWindow, id: i32) {
+        let m = MemberId(id as u32);
+        if !self.hub_pick.remove(&m) {
+            self.hub_pick.insert(m);
+        }
+        self.refresh_hub(ui);
+    }
+
+    pub fn hub_new_agreement(&mut self, ui: &AppWindow) {
+        let name = ui.get_new_agreement_name().trim().to_string();
+        if name.is_empty() || self.hub_pick.is_empty() {
+            return ui.set_hub_error(s("Name the agreement and pick who shares in it."));
+        }
+        let id = self
+            .hub_ledger
+            .agreements
+            .keys()
+            .map(|a| a.0)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let start = self.today.with_day(1).unwrap_or(self.today);
+        let members: serde_json::Map<String, Value> = self
+            .hub_pick
+            .iter()
+            .map(|m| (m.0.to_string(), json!(start)))
+            .collect();
+        self.hub_pick.clear();
+        ui.set_new_agreement_name(s(""));
+        self.hub_record(
+            ui,
+            "agreement-add",
+            json!({
+                "id": id, "name": name, "members": members,
+                "schedule": {"Monthly": {"start": start, "day": {"Day": 1}, "every": 1}},
+            }),
+            &format!("{name} was created."),
+        );
+    }
+
+    pub fn hub_make_code(&self, ui: &AppWindow, member: i32) {
+        let Some(book) = self.hub_book.clone() else {
+            return ui.set_hub_error(s("Create or unlock a book first."));
+        };
+        self.admin(
+            "POST",
+            "/admin/v1/pairing".into(),
+            Some(json!({"book_id": book, "member": member})),
+            AdminThen::Code,
+        );
+    }
+
+    pub fn hub_remove_device(&self, id: i32) {
+        self.admin(
+            "POST",
+            format!("/admin/v1/devices/{id}/revoke"),
+            None,
+            AdminThen::Done("The device was removed: it can't reach the hub any more.".into()),
+        );
+    }
+}
+
+fn member_s(m: view::MemberBalance) -> MemberS {
+    MemberS {
+        id: m.member.0 as i32,
+        name: s(m.name),
+        balance: s(m.balance),
+        sign: m.sign,
+    }
+}
+
+fn split_s(r: view::SplitRow) -> SplitS {
+    SplitS {
+        name: s(r.name),
+        amount: s(r.amount),
+    }
+}
+
+fn toast(ui: &AppWindow, msg: &str) {
+    ui.set_toast(s(msg));
+    let w = ui.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
+        if let Some(ui) = w.upgrade() {
+            ui.set_toast(s(""));
+        }
+    });
+}
+
+/// The pairing link as a QR code (black on white, 6 px a module, 4-module border).
+pub fn qr_image(text: &str) -> Image {
+    use qrcodegen::{QrCode, QrCodeEcc};
+    let Ok(qr) = QrCode::encode_text(text, QrCodeEcc::Medium) else {
+        return Image::default();
+    };
+    let (scale, border) = (6, 4);
+    let n = qr.size();
+    let px = ((n + 2 * border) * scale) as u32;
+    let mut buf = SharedPixelBuffer::<Rgb8Pixel>::new(px, px);
+    let w = px as usize;
+    for (i, p) in buf.make_mut_slice().iter_mut().enumerate() {
+        let (x, y) = (
+            (i % w) as i32 / scale - border,
+            (i / w) as i32 / scale - border,
+        );
+        let dark = qr.get_module(x, y);
+        let v = if dark { 0 } else { 255 };
+        *p = Rgb8Pixel { r: v, g: v, b: v };
+    }
+    Image::from_rgb8(buf)
+}

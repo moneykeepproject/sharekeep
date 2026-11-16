@@ -340,6 +340,10 @@ fn the_certificate_page_serves_the_authority_to_phones_and_computers() {
         .unwrap()
         .contains("com.apple.security.root"));
     assert_eq!(raw_http(helper, "GET", "/anything", None, None, "x").0, 302);
+    // the desktop app's fetch, and the fingerprint it shows, match the hub computer's
+    let der = sk_client::fetch_ca(helper).unwrap();
+    assert_eq!(der, h.r().ca_der);
+    assert_eq!(sk_client::fingerprint(&der), h.r().info.fingerprint);
 }
 
 #[test]

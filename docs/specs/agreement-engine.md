@@ -67,4 +67,6 @@ record with the PDF's SHA-256. Devices download it from `/api/v1/statements/<agr
 ## Not yet
 
 Spending-deposit top-ups on a schedule, interest crediting on a schedule, and recurring bills
-posting expected entries come with the app screens that drive them (4b).
+posting expected entries. The 4b screens don't offer deposits, events, joining, leaving or
+schedule changes yet either (the engine and the hub accept them); they come with the web app
+(4c), whose screens the desktop app shares.

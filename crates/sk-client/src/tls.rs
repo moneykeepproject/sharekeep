@@ -57,6 +57,36 @@ pub fn https_call(
     parse_answer(&answer)
 }
 
+/// A plain-HTTP request: the hub's certificate helper on the home network (public
+/// certificates only) and the hub computer's own loopback admin port. Never for anything
+/// secret across the network.
+pub fn http_call(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+) -> Result<(u16, Vec<u8>), String> {
+    let mut tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|e| format!("cannot connect to {addr}: {e}"))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if let Some(b) = body {
+        req.push_str(&format!("Content-Length: {}\r\n", b.len()));
+    }
+    req.push_str("\r\n");
+    let mut bytes = req.into_bytes();
+    bytes.extend_from_slice(body.unwrap_or(&[]));
+    tcp.write_all(&bytes).map_err(|e| e.to_string())?;
+    let mut answer = Vec::new();
+    tcp.read_to_end(&mut answer).map_err(|e| e.to_string())?;
+    parse_answer(&answer)
+}
+
 /// The status and body of an HTTP/1.1 answer (`Connection: close`; chunked bodies
 /// are joined).
 pub fn parse_answer(answer: &[u8]) -> Result<(u16, Vec<u8>), String> {

@@ -210,11 +210,105 @@ impl Client {
         )
     }
 
+    /// A closed period's statement (PDF bytes).
+    pub fn statement(&self, agreement: u32, first: &str) -> Result<Vec<u8>, CallError> {
+        let auth = self.token.as_ref().map(|t| format!("Bearer {t}"));
+        let mut headers: Vec<(&str, &str)> = vec![("Accept", "application/pdf")];
+        if let Some(a) = &auth {
+            headers.push(("Authorization", a));
+        }
+        let (status, answer) = tls::https_call(
+            self.hub.addr,
+            &self.hub.host,
+            &self.hub.ca_der(),
+            "GET",
+            &format!("/api/v1/statements/{agreement}/{first}"),
+            &headers,
+            None,
+        )
+        .map_err(CallError::Offline)?;
+        if !(200..300).contains(&status) {
+            let message = serde_json::from_slice::<ErrorAnswer>(&answer)
+                .map(|e| e.error)
+                .unwrap_or_else(|_| format!("the hub answered {status}"));
+            return Err(CallError::Http { status, message });
+        }
+        Ok(answer)
+    }
+
     /// An online-only change (an edit, a rule proposal…): sent now or not at all.
     pub fn submit_now(&self, kind: &str, body: &Value) -> Result<Record, CallError> {
         let id = random_hex::<16>().map_err(CallError::Offline)?;
         self.submit(&id, kind, body)
     }
+}
+
+/// The hub's certificate helper port (plain HTTP, home network).
+pub const HELPER_PORT: u16 = 15080;
+/// The hub's device port (HTTPS).
+pub const HTTPS_PORT: u16 = 15443;
+/// The hub computer's admin port (loopback only).
+pub const ADMIN_PORT: u16 = 15081;
+
+/// Fetch the hub's certificate authority from its helper page (`ip`:[`HELPER_PORT`]): the DER. The
+/// person then compares [`fingerprint`] with the hub computer's screen before trusting it.
+pub fn fetch_ca(helper: SocketAddr) -> Result<Vec<u8>, CallError> {
+    let (status, body) = tls::http_call(helper, "GET", "/sharekeep-ca.crt", &[], None)
+        .map_err(CallError::Offline)?;
+    if status != 200 {
+        return Err(CallError::Http {
+            status,
+            message: format!("the hub's certificate page answered {status}"),
+        });
+    }
+    from_pem(&String::from_utf8_lossy(&body))
+        .ok_or_else(|| CallError::BadAnswer("that isn't a certificate".into()))
+}
+
+/// The DER of PEM text (one certificate).
+pub fn from_pem(text: &str) -> Option<Vec<u8>> {
+    if !text.contains("-----BEGIN CERTIFICATE-----") {
+        return None;
+    }
+    let body: String = text
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .map(str::trim)
+        .collect();
+    base64_decode(&body).filter(|d| !d.is_empty())
+}
+
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.bytes() {
+        if c == b'=' {
+            break;
+        }
+        let v = A.iter().position(|a| *a == c)? as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// The certificate fingerprint the hub computer shows: the first 16 bytes of its SHA-256,
+/// in groups of four hex digits (as MoneyKeep's capture server).
+pub fn fingerprint(der: &[u8]) -> String {
+    use sha2::Digest;
+    let h = sha2::Sha256::digest(der);
+    h.get(..16)
+        .unwrap_or(&[])
+        .chunks(2)
+        .map(|c| c.iter().map(|b| format!("{b:02X}")).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Write `bytes` to `path` through a temporary file in the same folder, so a crash

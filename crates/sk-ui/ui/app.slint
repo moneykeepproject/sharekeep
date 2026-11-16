@@ -1,0 +1,627 @@
+// ShareKeep screens: one column of cards in the Capture style, centred and capped in width on a
+// desktop. Bottom tabs: Home, Approvals, Settings (and Hub on the hub computer).
+
+import { LineEdit, Slider, Switch, ScrollView, Palette } from "std-widgets.slint";
+import { Theme, Card, SectionTitle, Hint, FieldLabel, BigButton, LinkButton, Chip, Badge, NavTab, KeyValue, Stat } from "components.slint";
+
+export { Theme }
+
+export struct MemberS { id: int, name: string, balance: string, sign: int }
+export struct CardS { id: int, name: string, headline: string, sign: int, members: [MemberS], period: string, waiting: int }
+export struct ActivityS { seq: int, date: string, title: string, detail: string, amount: string, disputed: bool, editable: bool }
+export struct RuleS { id: int, name: string, method: string, detail: string }
+export struct PeriodS { key: string, label: string, state: string, closed: bool, can-close: bool }
+export struct ApprovalS { seq: int, title: string, detail: string }
+export struct SplitS { name: string, amount: string }
+export struct ExampleS { amount: string, rows: [SplitS] }
+export struct WeightS { name: string, value: float, included: bool, locked: bool }
+export struct ChoiceS { id: int, label: string, on: bool }
+export struct DeviceS { id: int, name: string, detail: string, revoked: bool }
+export struct BookS { file: string, name: string, detail: string, open: bool }
+
+// Vertically scrolling page, centred and capped in width for desktops.
+component Page inherits ScrollView {
+    content-width: self.visible-width;
+    content-height: col.preferred-height + 24px;
+    col := VerticalLayout {
+        x: max(0px, (root.visible-width - self.width) / 2);
+        width: min(root.visible-width, 640px);
+        padding: 12px;
+        padding-bottom: 24px;
+        spacing: 12px;
+        @children
+    }
+}
+
+// Text field with a label above it.
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> number: false;
+    in property <bool> secret: false;
+    in-out property <string> text;
+    callback edited(string);
+    spacing: 4px;
+    horizontal-stretch: 1;
+    FieldLabel { text: root.label; }
+    LineEdit {
+        min-height: 44px;
+        min-width: 56px;
+        text <=> root.text;
+        placeholder-text: root.placeholder;
+        input-type: root.secret ? InputType.password : root.number ? InputType.decimal : InputType.text;
+        edited(t) => { root.edited(t); }
+    }
+}
+
+// Horizontal chip strip that scrolls sideways on narrow screens.
+component ChipStrip inherits Flickable {
+    in property <[ChoiceS]> chips;
+    callback picked(int);
+    height: 44px;
+    content-width: max(self.width, row.preferred-width);
+    interactive: row.preferred-width > self.width;
+    row := HorizontalLayout {
+        alignment: start;
+        spacing: 8px;
+        for c in root.chips: Chip {
+            text: c.label;
+            on: c.on;
+            clicked => { root.picked(c.id); }
+        }
+    }
+}
+
+// A bottom sheet over the page.
+component Sheet inherits Rectangle {
+    in property <string> title;
+    in property <color> title-color: Theme.ink;
+    callback dismissed;
+    background: #0f172a80;
+    TouchArea { clicked => { root.dismissed(); } }
+    Rectangle {
+        y: max(40px, parent.height - self.height);
+        height: min(parent.height - 40px, sheet.preferred-height + 8px);
+        width: min(parent.width, 640px);
+        x: (parent.width - self.width) / 2;
+        background: Theme.bg;
+        border-top-left-radius: 18px;
+        border-top-right-radius: 18px;
+        TouchArea { }
+        ScrollView {
+            content-width: self.visible-width;
+            content-height: sheet.preferred-height;
+            sheet := VerticalLayout {
+                width: parent.visible-width;
+                padding: 16px;
+                spacing: 12px;
+                HorizontalLayout {
+                    Text {
+                        text: root.title;
+                        font-size: 20px;
+                        font-weight: 700;
+                        color: root.title-color;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    LinkButton { text: "Close"; fg: Theme.muted; clicked => { root.dismissed(); } }
+                }
+                @children
+            }
+        }
+    }
+}
+
+// Money with its sign shown by colour and words (never colour alone).
+component Amount inherits Text {
+    in property <int> sign;
+    font-size: Theme.font-body;
+    font-weight: 600;
+    color: sign > 0 ? Theme.green : sign < 0 ? Theme.red : Theme.muted;
+    horizontal-alignment: right;
+}
+
+component Banner inherits Rectangle {
+    in property <string> text;
+    in property <bool> warn;
+    height: t.preferred-height + 16px;
+    border-radius: 10px;
+    background: warn ? Theme.amber-soft : Theme.accent-soft;
+    border-width: 1px;
+    border-color: warn ? Theme.amber-line : Theme.accent;
+    t := Text {
+        x: 12px;
+        width: parent.width - 24px;
+        text: root.text;
+        wrap: word-wrap;
+        font-size: 14px;
+        color: warn ? Theme.amber : Theme.accent-dark;
+    }
+}
+
+component SplitList inherits VerticalLayout {
+    in property <[SplitS]> rows;
+    spacing: 4px;
+    for r in root.rows: KeyValue { label: r.name; value: r.amount; }
+}
+
+export component AppWindow inherits Window {
+    title: "ShareKeep" + (root.book-name != "" ? " – " + root.book-name : "");
+    preferred-width: 430px;
+    preferred-height: 860px;
+    min-width: 360px;
+    min-height: 560px;
+    background: Theme.bg;
+    default-font-size: 15px;
+
+    // ----- state from Rust -----
+    in-out property <int> page: 0;
+    in-out property <int> tab: 0;
+    in property <string> book-name;
+    in property <string> me-name;
+    in property <string> banner;
+    in property <bool> offline;
+    in property <int> pending;
+    in property <[string]> refused;
+    in property <string> toast;
+    in property <bool> is-hub;
+
+    in property <[CardS]> cards;
+    in property <string> agreement-name;
+    in property <string> agreement-period;
+    in property <[ActivityS]> activity;
+    in property <[RuleS]> rules;
+    in property <[MemberS]> members;
+    in property <[string]> settle;
+    in property <[PeriodS]> periods;
+    in property <[ApprovalS]> approvals;
+
+    // join a hub
+    in-out property <string> hub-address;
+    in property <string> hub-fingerprint;
+    in-out property <string> connect-code;
+    in-out property <string> connect-pin;
+    in-out property <string> device-name;
+    in property <string> connect-error;
+    in property <bool> busy;
+
+    // the expense sheet
+    in-out property <bool> exp-open;
+    in-out property <string> exp-amount;
+    in-out property <string> exp-category;
+    in-out property <string> exp-date;
+    in-out property <string> exp-note;
+    in property <[ChoiceS]> exp-payers;
+    in property <[SplitS]> exp-preview;
+    in property <string> exp-error;
+
+    // the payment sheet
+    in-out property <bool> pay-open;
+    in-out property <string> pay-amount;
+    in property <[ChoiceS]> pay-from;
+    in property <[ChoiceS]> pay-to;
+    in property <string> pay-error;
+
+    // the rule editor
+    in-out property <bool> rule-open;
+    in-out property <string> rule-name;
+    in-out property <string> rule-categories;
+    in property <[ChoiceS]> rule-methods;
+    in property <[WeightS]> rule-weights;
+    in property <bool> rule-percent;
+    in property <[ExampleS]> rule-examples;
+    in property <string> rule-error;
+
+    // the hub computer
+    in-out property <string> hub-pin;
+    in property <[BookS]> hub-books;
+    in property <[ChoiceS]> hub-members;
+    in property <[ChoiceS]> hub-agreement-members;
+    in property <[DeviceS]> hub-devices;
+    in property <string> hub-code;
+    in property <string> hub-code-detail;
+    in property <image> hub-qr;
+    in property <string> hub-error;
+    in property <string> hub-info;
+    in-out property <string> new-book-name;
+    in-out property <bool> new-book-hyperbook;
+    in-out property <string> new-book-password;
+    in-out property <string> new-member-name;
+    in-out property <string> new-agreement-name;
+    in-out property <string> unlock-password;
+
+    // ----- what the person does -----
+    callback check-hub();
+    callback pair();
+    callback open-agreement(int);
+    callback sync-now();
+    callback add-expense();
+    callback expense-changed();
+    callback payer-picked(int);
+    callback save-expense();
+    callback add-payment();
+    callback pay-from-picked(int);
+    callback pay-to-picked(int);
+    callback save-payment();
+    callback new-rule();
+    callback rule-method-picked(int);
+    callback rule-weight(int, float);
+    callback rule-toggle(int);
+    callback rule-lock(int);
+    callback rule-changed();
+    callback propose-rule();
+    callback approve(int, bool);
+    callback close-period(string);
+    callback statement(string);
+    callback delete-entry(int);
+    callback dispute-entry(int);
+    callback dismiss-refused();
+    callback hub-set-pin();
+    callback hub-new-book();
+    callback hub-unlock(string);
+    callback hub-add-member();
+    callback hub-member-picked(int);
+    callback hub-new-agreement();
+    callback hub-make-code(int);
+    callback hub-remove-device(int);
+
+    VerticalLayout {
+        // ----- header -----
+        Rectangle {
+            height: 56px;
+            background: Theme.accent;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 8px;
+                spacing: 8px;
+                if root.page == 2: LinkButton { text: "‹ Back"; fg: white; clicked => { root.page = 1; } }
+                Text {
+                    text: root.page == 2 ? root.agreement-name : root.book-name != "" ? root.book-name : "ShareKeep";
+                    color: white;
+                    font-size: 19px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                if root.page != 0: LinkButton { text: root.busy ? "Syncing…" : "Sync"; fg: white; clicked => { root.sync-now(); } }
+            }
+        }
+
+        // ----- pages -----
+        Rectangle {
+            vertical-stretch: 1;
+
+            // 0: join a household hub
+            if root.page == 0: Page {
+                SectionTitle { text: "Join your household"; }
+                Hint { text: "One computer in the household runs the ShareKeep hub. On that computer, open ShareKeep > Hub > Pair a device: it shows the hub's address, a pairing code and its QR code."; }
+                Card {
+                    Field { label: "Hub address"; placeholder: "192.168.1.20"; text <=> root.hub-address; }
+                    BigButton { text: "Find the hub"; primary: false; enabled: !root.busy; clicked => { root.check-hub(); } }
+                    if root.hub-fingerprint != "": Hint { text: "Certificate fingerprint. It must match the one on the hub computer's screen; if it doesn't, stop: something else is answering at that address."; }
+                    if root.hub-fingerprint != "": Text { text: root.hub-fingerprint; font-size: 15px; font-weight: 700; color: Theme.ink; wrap: word-wrap; }
+                }
+                if root.hub-fingerprint != "": Card {
+                    Field { label: "Pairing code"; placeholder: "ABCD-EFGH"; text <=> root.connect-code; }
+                    Field { label: "Household PIN"; placeholder: "6 to 12 digits"; secret: true; text <=> root.connect-pin; }
+                    Field { label: "Name this device"; placeholder: "Sam's laptop"; text <=> root.device-name; }
+                    BigButton { text: "Pair this device"; enabled: !root.busy; clicked => { root.pair(); } }
+                }
+                if root.connect-error != "": Banner { text: root.connect-error; warn: true; }
+            }
+
+            // 1: home
+            if root.page == 1: Page {
+                if root.banner != "": Banner { text: root.banner; warn: root.offline; }
+                if root.pending > 0: Banner { text: root.pending + " waiting to send to the hub."; warn: true; }
+                for c in root.cards: Card {
+                    clickable: true;
+                    stripe: c.sign > 0 ? Theme.green : c.sign < 0 ? Theme.red : Theme.line;
+                    clicked => { root.open-agreement(c.id); }
+                    HorizontalLayout {
+                        SectionTitle { text: c.name; horizontal-stretch: 1; }
+                        if c.waiting > 0: Badge { text: c.waiting + " to approve"; fg: Theme.amber; fill: Theme.amber-soft; }
+                    }
+                    Text { text: c.headline; font-size: 17px; font-weight: 700; color: c.sign > 0 ? Theme.green : c.sign < 0 ? Theme.red : Theme.ink; }
+                    for m in c.members: HorizontalLayout {
+                        Text { text: m.name; color: Theme.muted; horizontal-stretch: 1; }
+                        Amount { text: m.balance; sign: m.sign; }
+                    }
+                    Hint { text: "This period: " + c.period; }
+                }
+                if root.cards.length == 0: Card {
+                    SectionTitle { text: "Nothing to show yet"; }
+                    Hint { text: "Your household's agreements appear here once the hub computer adds you to one."; }
+                }
+            }
+
+            // 2: an agreement
+            if root.page == 2: VerticalLayout {
+                Rectangle {
+                    height: 52px;
+                    background: Theme.card;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 4px;
+                        alignment: center;
+                        Chip { text: "Activity"; on: root.tab == 0; clicked => { root.tab = 0; } }
+                        Chip { text: "Members"; on: root.tab == 1; clicked => { root.tab = 1; } }
+                        Chip { text: "Rules"; on: root.tab == 2; clicked => { root.tab = 2; } }
+                        Chip { text: "Periods"; on: root.tab == 3; clicked => { root.tab = 3; } }
+                    }
+                }
+                if root.tab == 0: Page {
+                    HorizontalLayout {
+                        spacing: 8px;
+                        BigButton { text: "+ Expense"; clicked => { root.add-expense(); } }
+                        BigButton { text: "Record payment"; primary: false; clicked => { root.add-payment(); } }
+                    }
+                    Hint { text: "This period: " + root.agreement-period; }
+                    for a in root.activity: Card {
+                        stripe: a.disputed ? Theme.amber-line : transparent;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                Text { text: a.title; font-weight: 600; color: Theme.ink; overflow: elide; }
+                                Hint { text: a.date + " · " + a.detail + (a.disputed ? " · disputed" : ""); }
+                            }
+                            Text { text: a.amount; font-weight: 700; color: Theme.ink; vertical-alignment: center; }
+                        }
+                        if a.editable: HorizontalLayout {
+                            alignment: end;
+                            LinkButton { text: a.disputed ? "Resolve" : "Dispute"; fg: Theme.amber; clicked => { root.dispute-entry(a.seq); } }
+                            LinkButton { text: "Delete"; fg: Theme.red; clicked => { root.delete-entry(a.seq); } }
+                        }
+                    }
+                    if root.activity.length == 0: Hint { text: "No expenses yet. Add the first one with + Expense."; }
+                }
+                if root.tab == 1: Page {
+                    Card {
+                        SectionTitle { text: "Balances"; }
+                        for m in root.members: HorizontalLayout {
+                            Text { text: m.name; color: Theme.ink; horizontal-stretch: 1; }
+                            Amount { text: m.balance; sign: m.sign; }
+                        }
+                        Hint { text: "Positive: the household owes them. Negative: they owe the household."; }
+                    }
+                    Card {
+                        SectionTitle { text: "To settle up"; }
+                        for s in root.settle: Text { text: s; color: Theme.ink; wrap: word-wrap; }
+                        if root.settle.length == 0: Hint { text: "Everyone is settled up."; }
+                    }
+                }
+                if root.tab == 2: Page {
+                    BigButton { text: "Propose a rule"; clicked => { root.new-rule(); } }
+                    for r in root.rules: Card {
+                        HorizontalLayout {
+                            SectionTitle { text: r.name; horizontal-stretch: 1; }
+                            Badge { text: r.method; }
+                        }
+                        Hint { text: r.detail; }
+                    }
+                    if root.rules.length == 0: Hint { text: "No rules yet. Propose one: it takes effect once everyone approves."; }
+                }
+                if root.tab == 3: Page {
+                    for p in root.periods: Card {
+                        stripe: p.closed ? Theme.line : p.can-close ? Theme.amber-line : Theme.accent;
+                        HorizontalLayout {
+                            SectionTitle { text: p.label; horizontal-stretch: 1; }
+                        }
+                        Hint { text: p.state; }
+                        if p.can-close: BigButton { text: "Close this period"; clicked => { root.close-period(p.key); } }
+                        if p.closed: BigButton { text: "Save the statement (PDF)"; primary: false; clicked => { root.statement(p.key); } }
+                    }
+                }
+            }
+
+            // 3: approvals
+            if root.page == 3: Page {
+                SectionTitle { text: "Waiting for you"; }
+                for a in root.approvals: Card {
+                    stripe: Theme.amber-line;
+                    Text { text: a.title; font-weight: 700; color: Theme.ink; wrap: word-wrap; }
+                    Hint { text: a.detail; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        BigButton { text: "Approve"; clicked => { root.approve(a.seq, true); } }
+                        BigButton { text: "Decline"; primary: false; danger: true; clicked => { root.approve(a.seq, false); } }
+                    }
+                }
+                if root.approvals.length == 0: Hint { text: "Nothing waits for your approval."; }
+            }
+
+            // 4: settings
+            if root.page == 4: Page {
+                Card {
+                    SectionTitle { text: "This device"; }
+                    KeyValue { label: "You are"; value: root.me-name; }
+                    KeyValue { label: "Book"; value: root.book-name; }
+                    KeyValue { label: "Waiting to send"; value: root.pending; }
+                    BigButton { text: "Sync now"; primary: false; clicked => { root.sync-now(); } }
+                }
+                if root.refused.length > 0: Card {
+                    stripe: Theme.red;
+                    SectionTitle { text: "Not accepted by the hub"; }
+                    for r in root.refused: Text { text: r; wrap: word-wrap; color: Theme.ink; }
+                    LinkButton { text: "Dismiss"; clicked => { root.dismiss-refused(); } }
+                }
+                Card {
+                    SectionTitle { text: "About"; }
+                    Hint { text: "ShareKeep, part of the MoneyKeep family. MIT OR Apache-2.0. Built with Slint."; }
+                }
+            }
+
+            // 5: the hub computer
+            if root.page == 5: Page {
+                if root.hub-error != "": Banner { text: root.hub-error; warn: true; }
+                if root.hub-info != "": Banner { text: root.hub-info; }
+                Card {
+                    SectionTitle { text: "Pair a device"; }
+                    Hint { text: "Pick who the device belongs to. On the device, open the certificate page first (step 1), then scan this code or type it (step 2). The code works once, for 10 minutes."; }
+                    ChipStrip { chips: root.hub-members; picked(id) => { root.hub-make-code(id); } }
+                    if root.hub-code != "": VerticalLayout {
+                        spacing: 8px;
+                        alignment: center;
+                        Image { source: root.hub-qr; width: 200px; height: 200px; image-rendering: pixelated; }
+                        Text { text: root.hub-code; font-size: 28px; font-weight: 700; color: Theme.ink; horizontal-alignment: center; }
+                        Hint { text: root.hub-code-detail; horizontal-alignment: center; }
+                    }
+                }
+                Card {
+                    SectionTitle { text: "Household PIN"; }
+                    Hint { text: "Every device needs it once, when it pairs. 6 to 12 digits."; }
+                    Field { label: "New PIN"; secret: true; text <=> root.hub-pin; }
+                    BigButton { text: "Set the PIN"; primary: false; clicked => { root.hub-set-pin(); } }
+                }
+                Card {
+                    SectionTitle { text: "Books on this hub"; }
+                    for b in root.hub-books: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: b.name; font-weight: 600; color: Theme.ink; }
+                        Hint { text: b.detail; }
+                        if !b.open: Field { label: "Password"; secret: true; text <=> root.unlock-password; }
+                        if !b.open: BigButton { text: "Unlock " + b.file; primary: false; clicked => { root.hub-unlock(b.file); } }
+                    }
+                    Field { label: "New book"; placeholder: "Home"; text <=> root.new-book-name; }
+                    Switch { text: "Make it a Hyperbook"; checked <=> root.new-book-hyperbook; }
+                    Hint { text: "A Hyperbook keeps every change for good, chained so no one can quietly rewrite the past. It's chosen now and can't be changed later."; }
+                    Field { label: "Password (optional: encrypts the book)"; secret: true; text <=> root.new-book-password; }
+                    BigButton { text: "Create the book"; primary: false; clicked => { root.hub-new-book(); } }
+                }
+                Card {
+                    SectionTitle { text: "People and agreements"; }
+                    Field { label: "Add a person"; placeholder: "Sam"; text <=> root.new-member-name; }
+                    BigButton { text: "Add"; primary: false; clicked => { root.hub-add-member(); } }
+                    Field { label: "New agreement"; placeholder: "Apartment"; text <=> root.new-agreement-name; }
+                    Hint { text: "Who shares in it:"; }
+                    ChipStrip { chips: root.hub-agreement-members; picked(id) => { root.hub-member-picked(id); } }
+                    BigButton { text: "Create the agreement (settles monthly, on the 1st)"; primary: false; clicked => { root.hub-new-agreement(); } }
+                }
+                Card {
+                    SectionTitle { text: "Devices"; }
+                    for d in root.hub-devices: HorizontalLayout {
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text { text: d.name; color: d.revoked ? Theme.muted : Theme.ink; }
+                            Hint { text: d.detail; }
+                        }
+                        if !d.revoked: LinkButton { text: "Remove"; fg: Theme.red; clicked => { root.hub-remove-device(d.id); } }
+                    }
+                    if root.hub-devices.length == 0: Hint { text: "No devices paired yet."; }
+                }
+            }
+        }
+
+        // ----- bottom tabs -----
+        if root.page != 0: Rectangle {
+            height: 60px;
+            background: Theme.card;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #0f172a1a;
+            HorizontalLayout {
+                NavTab { icon: "⌂"; label: "Home"; active: root.page == 1 || root.page == 2; clicked => { root.page = 1; } }
+                NavTab { icon: "✓"; label: "Approvals"; active: root.page == 3; badge: root.approvals.length; clicked => { root.page = 3; } }
+                if root.is-hub: NavTab { icon: "⌘"; label: "Hub"; active: root.page == 5; clicked => { root.page = 5; } }
+                NavTab { icon: "⚙"; label: "Settings"; active: root.page == 4; badge: root.refused.length; clicked => { root.page = 4; } }
+            }
+        }
+    }
+
+    // ----- the expense sheet -----
+    if root.exp-open: Sheet {
+        title: "New expense";
+        dismissed => { root.exp-open = false; }
+        Field { label: "Amount"; placeholder: "0.00"; number: true; text <=> root.exp-amount; edited => { root.expense-changed(); } }
+        Field { label: "Category"; placeholder: "Groceries"; text <=> root.exp-category; edited => { root.expense-changed(); } }
+        Field { label: "Date (YYYY-MM-DD)"; text <=> root.exp-date; edited => { root.expense-changed(); } }
+        Field { label: "Note (optional)"; text <=> root.exp-note; }
+        FieldLabel { text: "Paid by"; }
+        ChipStrip { chips: root.exp-payers; picked(id) => { root.payer-picked(id); } }
+        Card {
+            SectionTitle { text: "How it divides"; }
+            SplitList { rows: root.exp-preview; }
+            if root.exp-error != "": Text { text: root.exp-error; color: Theme.red; wrap: word-wrap; }
+        }
+        BigButton { text: "Save"; enabled: root.exp-error == "" && root.exp-preview.length > 0; clicked => { root.save-expense(); } }
+    }
+
+    // ----- the payment sheet -----
+    if root.pay-open: Sheet {
+        title: "Record a payment";
+        dismissed => { root.pay-open = false; }
+        Field { label: "Amount"; placeholder: "0.00"; number: true; text <=> root.pay-amount; }
+        FieldLabel { text: "From"; }
+        ChipStrip { chips: root.pay-from; picked(id) => { root.pay-from-picked(id); } }
+        FieldLabel { text: "To"; }
+        ChipStrip { chips: root.pay-to; picked(id) => { root.pay-to-picked(id); } }
+        if root.pay-error != "": Text { text: root.pay-error; color: Theme.red; wrap: word-wrap; }
+        BigButton { text: "Save"; clicked => { root.save-payment(); } }
+    }
+
+    // ----- the rule editor -----
+    if root.rule-open: Sheet {
+        title: "Propose a rule";
+        dismissed => { root.rule-open = false; }
+        Field { label: "Name"; placeholder: "Rent 2027"; text <=> root.rule-name; edited => { root.rule-changed(); } }
+        Field { label: "Categories it's the default for (comma-separated)"; placeholder: "Rent, Utilities"; text <=> root.rule-categories; }
+        FieldLabel { text: "Method"; }
+        ChipStrip { chips: root.rule-methods; picked(id) => { root.rule-method-picked(id); } }
+        Card {
+            SectionTitle { text: root.rule-percent ? "Percentages (always total 100%)" : "Who shares"; }
+            for w[i] in root.rule-weights: VerticalLayout {
+                spacing: 2px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Switch { text: w.name; checked: w.included; toggled => { root.rule-toggle(i); } }
+                    Text {
+                        text: !w.included ? "opted out" : root.rule-percent ? round(w.value) + "%" : round(w.value) + (root.rule-methods[0].on ? "" : " share(s)");
+                        color: Theme.ink;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    if root.rule-percent && w.included: LinkButton { text: w.locked ? "Locked" : "Lock"; fg: w.locked ? Theme.amber : Theme.accent; clicked => { root.rule-lock(i); } }
+                }
+                if w.included && !root.rule-methods[0].on: Slider {
+                    minimum: 0;
+                    maximum: root.rule-percent ? 100 : 10;
+                    value: w.value;
+                    enabled: !w.locked;
+                    changed(v) => { root.rule-weight(i, v); }
+                }
+            }
+        }
+        Card {
+            SectionTitle { text: "Examples"; }
+            if root.rule-error != "": Text { text: root.rule-error; color: Theme.red; wrap: word-wrap; }
+            for e in root.rule-examples: VerticalLayout {
+                spacing: 4px;
+                Text { text: e.amount; font-weight: 700; color: Theme.ink; }
+                SplitList { rows: e.rows; }
+            }
+        }
+        Hint { text: "Everyone else in the agreement approves it before it takes effect. It starts with the next period."; }
+        BigButton { text: "Propose"; enabled: root.rule-error == "" && root.rule-name != ""; clicked => { root.propose-rule(); } }
+    }
+
+    // ----- a passing message -----
+    if root.toast != "": Rectangle {
+        y: parent.height - 120px;
+        x: (parent.width - self.width) / 2;
+        width: min(parent.width - 32px, 480px);
+        height: tt.preferred-height + 20px;
+        border-radius: 10px;
+        background: #1e293bee;
+        tt := Text {
+            x: 12px;
+            width: parent.width - 24px;
+            text: root.toast;
+            color: white;
+            wrap: word-wrap;
+        }
+    }
+}

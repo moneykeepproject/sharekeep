@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sk-core", "crates/sk-split", "crates/sk-chain", "crates/sk-store", "crates/sk-ledger", "crates/sk-report", "crates/sk-hub", "crates/sk-client", "xtask"]
+members = ["crates/sk-core", "crates/sk-split", "crates/sk-chain", "crates/sk-store", "crates/sk-ledger", "crates/sk-report", "crates/sk-hub", "crates/sk-client", "crates/sk-ui", "apps/sharekeep-app", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,7 +16,9 @@ sk-store = { path = "crates/sk-store" }
 sk-split = { path = "crates/sk-split" }
 sk-ledger = { path = "crates/sk-ledger" }
 sk-report = { path = "crates/sk-report" }
+sk-ui = { path = "crates/sk-ui" }
 sk-client = { path = "crates/sk-client" }
+sk-hub = { path = "crates/sk-hub" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
@@ -40,6 +42,15 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 base64 = "0.22"
 # Statement PDFs with the built-in Helvetica (as GroupKeep).
 printpdf = "0.7"
+# The user interface (as MoneyKeep): Slint under its Royalty-free License 2.0, Fluent style,
+# pinned to one exact version (its testing backend doesn't follow semver).
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2"] }
+slint-build = "=1.18.1"
+i-slint-backend-testing = "=1.18.1"
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+directories = "6"
+# The pairing QR code on the hub computer (MIT).
+qrcodegen = "1.8"
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 
 # Key derivation is deliberately expensive; optimise it even in debug builds so the

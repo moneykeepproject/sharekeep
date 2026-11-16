@@ -1098,6 +1098,12 @@ impl Ledger {
         Ok(statement::build(self, b.agreement, span, seq))
     }
 
+    /// How an expense would be divided if posted now (the live preview while typing).
+    pub fn preview_expense(&self, author: Option<MemberId>, e: Expense) -> Result<Entry, Reject> {
+        let seq = self.entries.keys().next_back().map_or(1, |s| s + 1);
+        self.clone().post_expense(seq, author, e, None)
+    }
+
     /// Proposals waiting for `member`'s answer.
     pub fn waiting_for(&self, member: MemberId) -> Vec<&Proposal> {
         self.proposals

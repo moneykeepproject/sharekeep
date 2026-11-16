@@ -1,0 +1,22 @@
+[package]
+name = "sk-ui"
+description = "ShareKeep screens (Slint, Capture style) and the view models that fill them from a book's state; shared by the desktop app and the web app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# backend-winit is what brings Slint's image decoding (the Fluent style's icons are SVGs); the
+# desktop and web apps use winit anyway.
+[dependencies]
+sk-core.workspace = true
+sk-split.workspace = true
+sk-ledger.workspace = true
+sk-chain.workspace = true
+chrono.workspace = true
+slint = { workspace = true, features = ["backend-winit", "renderer-software"] }
+serde_json.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

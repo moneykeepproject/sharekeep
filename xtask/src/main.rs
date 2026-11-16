@@ -130,7 +130,9 @@ fn workflow_problems(name: &str, text: &str) -> Vec<String> {
 /// the asynchronous sheet on macOS.
 fn check_guards(root: &Path) -> Vec<String> {
     let mut problems = Vec::new();
-    for path in files(&root.join("crates"), &["rs"]) {
+    let mut sources = files(&root.join("crates"), &["rs"]);
+    sources.extend(files(&root.join("apps"), &["rs"]));
+    for path in sources {
         if file_name(&path) == "dialogs.rs" {
             continue;
         }
