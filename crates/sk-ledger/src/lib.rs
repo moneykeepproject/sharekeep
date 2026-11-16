@@ -19,10 +19,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sk_chain::Record;
 use sk_core::{AgreementId, Cents, DateSpan, DepositId, MemberId, NaiveDate, RuleId};
-use sk_split::deposits::{split_shortfall, Deposit, DepositKind, DepositState, Shortfall};
+use sk_split::deposits::{
+    interest, split_shortfall, Deposit, DepositKind, DepositState, Shortfall,
+};
 use sk_split::ledger::{Balances, Paid, Posting};
 use sk_split::method::{period_cap_adjustment, split, Rule, SplitInput};
-use sk_split::periods::{place, Event, Placement, ScheduleBook};
+use sk_split::periods::{place, Event, Placement, Schedule, ScheduleBook};
 use sk_split::prorate::Membership;
 use sk_split::rules::RuleBook;
 use std::collections::{BTreeMap, BTreeSet};
@@ -187,7 +189,41 @@ pub struct Agreement {
     pub events: BTreeMap<u32, Event>,
     pub deposits: BTreeMap<DepositId, (Deposit, DepositState)>,
     pub closed: Vec<Closed>,
+    /// Recurring bills and top-ups, by id.
+    #[serde(default)]
+    pub recurring: BTreeMap<u32, Recurring>,
+    /// Occurrences already recorded: (recurring id, due date, the member for a top-up).
+    #[serde(default)]
+    pub fulfilled: BTreeSet<(u32, NaiveDate, Option<MemberId>)>,
 }
+
+/// A recurring bill or top-up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recurring {
+    pub id: u32,
+    pub name: String,
+    pub schedule: Schedule,
+    pub what: Repeats,
+    pub added: NaiveDate,
+    pub stopped: Option<NaiveDate>,
+}
+
+/// An occurrence that is due (or due within a week) and not recorded yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Expected {
+    pub recurring: u32,
+    pub name: String,
+    pub date: NaiveDate,
+    pub what: Repeats,
+    /// For a top-up: whose payment this is.
+    pub member: Option<MemberId>,
+    pub amount: Cents,
+}
+
+/// How far back unrecorded occurrences are still listed.
+pub const EXPECTED_LOOKBACK_DAYS: i64 = 92;
+/// How far ahead upcoming ones are listed.
+pub const EXPECTED_LOOKAHEAD_DAYS: i64 = 7;
 
 impl Agreement {
     /// Members in the agreement on `date`.
@@ -394,6 +430,8 @@ impl Ledger {
                         events: BTreeMap::new(),
                         deposits: BTreeMap::new(),
                         closed: Vec::new(),
+                        recurring: BTreeMap::new(),
+                        fulfilled: BTreeSet::new(),
                     },
                 );
             }
@@ -549,7 +587,12 @@ impl Ledger {
             "expense" => {
                 let e: Expense = parse(&r.body)?;
                 let entry = self.post_expense(r.seq, author, e, None)?;
+                self.fulfil_entry(&entry, true);
                 self.entries.insert(r.seq, entry);
+            }
+            "recurring" => {
+                let b: RecurringBody = parse(&r.body)?;
+                self.recurring(author, today, b)?;
             }
             "payment" => {
                 let p: Payment = parse(&r.body)?;
@@ -605,7 +648,9 @@ impl Ledger {
                     ));
                 }
                 self.undo_pot(&old)?;
+                self.fulfil_entry(&old, false);
                 let mut entry = self.post_expense(old.seq, author, b.expense, Some(&old))?;
+                self.fulfil_entry(&entry, true);
                 entry.edited_by = Some(r.seq);
                 entry.author = old.author;
                 entry.disputed = old.disputed;
@@ -616,6 +661,8 @@ impl Ledger {
                 let old = self.open_entry(b.target)?;
                 self.author_in(old.agreement, author, today)?;
                 self.undo_pot(&old)?;
+                // a deleted recurring bill is due again
+                self.fulfil_entry(&old, false);
                 if let Some(e) = self.entries.get_mut(&b.target) {
                     e.deleted = true;
                     e.edited_by = Some(r.seq);
@@ -797,6 +844,15 @@ impl Ledger {
                 "That date is in a closed period: record it as a correction in the current period.",
             ));
         }
+        if let Some(d) = e.due {
+            match ag.recurring.get(&d.recurring) {
+                Some(r) if matches!(r.what, Repeats::Bill { .. }) => {}
+                _ => return Err(no("That isn't one of this agreement's recurring bills.")),
+            }
+            if ag.fulfilled.contains(&(d.recurring, d.date, None)) {
+                return Err(no("That bill is already recorded."));
+            }
+        }
         let event = match e.event {
             Some(id) => Some(
                 ag.events
@@ -958,10 +1014,23 @@ impl Ledger {
                 );
             }
             DepositBody::PayIn {
-                id, member, amount, ..
+                id,
+                member,
+                amount,
+                due,
+                ..
             } => {
                 check_amount(amount)?;
                 member_ok(ag, &member)?;
+                if let Some(d) = due {
+                    match ag.recurring.get(&d.recurring).map(|r| &r.what) {
+                        Some(Repeats::TopUp { deposit, .. }) if *deposit == id => {}
+                        _ => return Err(no("That isn't a top-up of this pot.")),
+                    }
+                    if !ag.fulfilled.insert((d.recurring, d.date, Some(member))) {
+                        return Err(no("That top-up is already recorded."));
+                    }
+                }
                 let (_, st) = ag
                     .deposits
                     .get_mut(&id)
@@ -1089,13 +1158,170 @@ impl Ledger {
                 }
             }
         }
+        let bp = self.interest_bp;
         let ag = self.agreement(b.agreement)?;
+        // interest on held deposits for the period, at the book's rate (none by default)
+        if bp > 0 {
+            for (dep, st) in ag.deposits.values_mut() {
+                if dep.kind == DepositKind::Held {
+                    let amount = interest(st.balance(), bp, span.days());
+                    st.credit_interest(amount)?;
+                }
+            }
+        }
         ag.closed.push(Closed {
             span,
             seq,
             adjustments,
         });
         Ok(statement::build(self, b.agreement, span, seq))
+    }
+
+    fn recurring(
+        &mut self,
+        author: Option<MemberId>,
+        today: NaiveDate,
+        b: RecurringBody,
+    ) -> Result<(), Reject> {
+        match b {
+            RecurringBody::Add {
+                agreement,
+                id,
+                name,
+                schedule,
+                what,
+            } => {
+                self.author_in(agreement, author, today)?;
+                check_text("name", &name, 64)?;
+                ScheduleBook::new(schedule.clone())?;
+                let ag = self.agreement(agreement)?;
+                if ag.recurring.contains_key(&id) {
+                    return Err(no("That recurring item already exists."));
+                }
+                match &what {
+                    Repeats::Bill {
+                        amount,
+                        category,
+                        payer,
+                    } => {
+                        check_amount(*amount)?;
+                        check_text("category", category, 64)?;
+                        if let Some(p) = payer {
+                            if !ag.members.contains_key(p) {
+                                return Err(no(format!("{p} isn't in this agreement.")));
+                            }
+                        }
+                    }
+                    Repeats::TopUp { deposit, amounts } => {
+                        match ag.deposits.get(deposit) {
+                            Some((d, _)) if d.kind == DepositKind::Spending => {}
+                            _ => return Err(no("Top-ups go into a spending deposit (a pot).")),
+                        }
+                        if amounts.is_empty() {
+                            return Err(no("Say how much each member puts in."));
+                        }
+                        for (m, a) in amounts {
+                            check_amount(*a)?;
+                            if !ag.members.contains_key(m) {
+                                return Err(no(format!("{m} isn't in this agreement.")));
+                            }
+                        }
+                    }
+                }
+                ag.recurring.insert(
+                    id,
+                    Recurring {
+                        id,
+                        name: name.trim().to_string(),
+                        schedule,
+                        what,
+                        added: today,
+                        stopped: None,
+                    },
+                );
+            }
+            RecurringBody::Stop { agreement, id } => {
+                self.author_in(agreement, author, today)?;
+                let ag = self.agreement(agreement)?;
+                let r = ag
+                    .recurring
+                    .get_mut(&id)
+                    .ok_or_else(|| no("There's no such recurring item."))?;
+                r.stopped.get_or_insert(today);
+            }
+        }
+        Ok(())
+    }
+
+    /// Mark (or unmark) the recurring bill an expense entry records.
+    fn fulfil_entry(&mut self, e: &Entry, on: bool) {
+        let EntryKind::Expense { expense, .. } = &e.kind else {
+            return;
+        };
+        let Some(d) = expense.due else { return };
+        if let Some(ag) = self.agreements.get_mut(&e.agreement) {
+            if on {
+                ag.fulfilled.insert((d.recurring, d.date, None));
+            } else {
+                ag.fulfilled.remove(&(d.recurring, d.date, None));
+            }
+        }
+    }
+
+    /// What's due in an agreement on `today` (and within a week), not recorded yet: bills for
+    /// anyone to record, top-ups per member. Oldest first.
+    pub fn expected(&self, a: AgreementId, today: NaiveDate) -> Vec<Expected> {
+        let Some(ag) = self.agreements.get(&a) else {
+            return Vec::new();
+        };
+        let from = today - chrono::Duration::days(EXPECTED_LOOKBACK_DAYS);
+        let to = today + chrono::Duration::days(EXPECTED_LOOKAHEAD_DAYS);
+        let mut out = Vec::new();
+        for r in ag.recurring.values() {
+            let first = from.max(r.added);
+            let last = r.stopped.map_or(to, |s| s.min(to));
+            let Some(span) = DateSpan::new(first, last) else {
+                continue;
+            };
+            for date in r.schedule.dates_in(&span) {
+                if ag.is_closed(date) {
+                    continue;
+                }
+                match &r.what {
+                    Repeats::Bill { amount, .. } => {
+                        if !ag.fulfilled.contains(&(r.id, date, None)) {
+                            out.push(Expected {
+                                recurring: r.id,
+                                name: r.name.clone(),
+                                date,
+                                what: r.what.clone(),
+                                member: None,
+                                amount: *amount,
+                            });
+                        }
+                    }
+                    Repeats::TopUp { amounts, .. } => {
+                        for (m, amount) in amounts {
+                            let active = ag.members.get(m).is_some_and(|s| {
+                                s.joined <= date && s.left.is_none_or(|l| date <= l)
+                            });
+                            if active && !ag.fulfilled.contains(&(r.id, date, Some(*m))) {
+                                out.push(Expected {
+                                    recurring: r.id,
+                                    name: r.name.clone(),
+                                    date,
+                                    what: r.what.clone(),
+                                    member: Some(*m),
+                                    amount: *amount,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|e| (e.date, e.recurring, e.member));
+        out
     }
 
     /// How an expense would be divided if posted now (the live preview while typing).

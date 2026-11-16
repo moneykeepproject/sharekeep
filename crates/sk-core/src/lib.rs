@@ -18,9 +18,33 @@ pub type Cents = i64;
 macro_rules! id_type {
     ($(#[$doc:meta])* $name:ident, $prefix:literal) => {
         $(#[$doc])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
         #[serde(transparent)]
         pub struct $name(pub u32);
+
+        // A number, or a number in a string: map keys in JSON are strings, and serde hands
+        // an internally tagged record's map keys over as strings.
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                struct V;
+                impl serde::de::Visitor<'_> for V {
+                    type Value = u32;
+                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        f.write_str("a whole number")
+                    }
+                    fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<u32, E> {
+                        u32::try_from(v).map_err(|_| E::custom("number too large"))
+                    }
+                    fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<u32, E> {
+                        u32::try_from(v).map_err(|_| E::custom("not a whole number"))
+                    }
+                    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<u32, E> {
+                        v.parse().map_err(|_| E::custom("not a whole number"))
+                    }
+                }
+                d.deserialize_any(V).map($name)
+            }
+        }
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -77,6 +101,24 @@ impl DateSpan {
 
     pub fn contains(&self, day: NaiveDate) -> bool {
         self.first <= day && day <= self.last
+    }
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    #[test]
+    fn ids_read_from_numbers_and_strings() {
+        let a: MemberId = serde_json::from_str("3").unwrap();
+        let b: MemberId = serde_json::from_str("\"3\"").unwrap();
+        assert_eq!(a, b);
+        assert!(serde_json::from_str::<MemberId>("-1").is_err());
+        assert!(serde_json::from_str::<MemberId>("\"x\"").is_err());
+        let m: std::collections::BTreeMap<MemberId, i64> =
+            serde_json::from_str("{\"1\": 5}").unwrap();
+        assert_eq!(m[&MemberId(1)], 5);
+        assert_eq!(serde_json::to_string(&MemberId(4)).unwrap(), "4");
     }
 }
 

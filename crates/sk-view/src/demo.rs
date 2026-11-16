@@ -98,12 +98,63 @@ pub fn records(today: NaiveDate) -> Vec<Record> {
         "expense",
         exp(day(3), 8347, 2, "Groceries", "Trader Joe's"),
     );
+    // a pot everyone tops up monthly, a security deposit, and the monthly bills
     add(
-        day(5),
-        Some(3),
-        "expense",
-        exp(day(5), 9620, 3, "Utilities", "Electric bill"),
+        last,
+        Some(1),
+        "deposit",
+        json!({"op": "create", "agreement": 1, "id": 1, "kind": "Spending", "label": "Household pot",
+               "holder": "HouseholdPot", "refundable": "Yes"}),
     );
+    add(
+        last,
+        Some(1),
+        "deposit",
+        json!({"op": "create", "agreement": 1, "id": 2, "kind": "Held", "label": "Rental security",
+               "holder": "Landlord", "refundable": "Yes"}),
+    );
+    for (m, amount) in [(1, 60000), (2, 52500), (3, 37500)] {
+        add(
+            last,
+            Some(m),
+            "deposit",
+            json!({"op": "pay-in", "agreement": 1, "id": 2, "member": m, "amount": amount}),
+        );
+    }
+    // a monthly schedule's start is its first due date
+    let monthly = |d: u32| json!({"Monthly": {"start": last.with_day(d).unwrap_or(last), "day": {"Day": d}, "every": 1}});
+    add(
+        last,
+        Some(3),
+        "recurring",
+        json!({"op": "add", "agreement": 1, "id": 1, "name": "Electric", "schedule": monthly(5),
+               "what": {"type": "bill", "amount": 9500, "category": "Utilities", "payer": 3}}),
+    );
+    add(
+        last,
+        Some(1),
+        "recurring",
+        json!({"op": "add", "agreement": 1, "id": 2, "name": "Internet",
+               "schedule": monthly(today.day().min(28)),
+               "what": {"type": "bill", "amount": 6999, "category": "Utilities", "payer": 1}}),
+    );
+    add(
+        last,
+        Some(1),
+        "recurring",
+        json!({"op": "add", "agreement": 1, "id": 3, "name": "Pot top-up", "schedule": monthly(1),
+               "what": {"type": "top-up", "deposit": 1, "amounts": {"1": 5000, "2": 5000, "3": 5000}}}),
+    );
+    add(
+        month,
+        Some(1),
+        "deposit",
+        json!({"op": "pay-in", "agreement": 1, "id": 1, "member": 1, "amount": 5000,
+               "due": {"recurring": 3, "date": month}}),
+    );
+    let mut electric = exp(day(5), 9620, 3, "Utilities", "Electric bill");
+    electric["due"] = json!({"recurring": 1, "date": month.with_day(5).unwrap_or(month)});
+    add(day(5), Some(3), "expense", electric);
     let d = add(
         day(6),
         Some(3),

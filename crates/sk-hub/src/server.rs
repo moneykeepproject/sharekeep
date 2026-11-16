@@ -52,6 +52,7 @@ pub const DEVICE_KINDS: &[&str] = &[
     "member-leave",
     "period-close",
     "schedule",
+    "recurring",
 ];
 
 /// Kinds the hub computer may add besides those.

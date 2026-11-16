@@ -101,6 +101,52 @@ pub struct Expense {
     pub days: BTreeMap<MemberId, u32>,
     #[serde(default)]
     pub usage: BTreeMap<MemberId, u64>,
+    /// The recurring bill this records, and its due date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<Due>,
+}
+
+/// Which occurrence of a recurring bill or top-up a record fulfils.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Due {
+    pub recurring: u32,
+    pub date: NaiveDate,
+}
+
+/// What repeats.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum Repeats {
+    /// A bill expected on each due date: about `amount`, usually paid by `payer`.
+    Bill {
+        amount: Cents,
+        category: String,
+        #[serde(default)]
+        payer: Option<MemberId>,
+    },
+    /// Each member pays this much into a spending deposit (the pot) on each due date.
+    TopUp {
+        deposit: DepositId,
+        amounts: BTreeMap<MemberId, Cents>,
+    },
+}
+
+/// `recurring`: a bill or pot top-up expected on a schedule (the screens list what's due; a
+/// member records it), or stopping one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case")]
+pub enum RecurringBody {
+    Add {
+        agreement: AgreementId,
+        id: u32,
+        name: String,
+        schedule: Schedule,
+        what: Repeats,
+    },
+    Stop {
+        agreement: AgreementId,
+        id: u32,
+    },
 }
 
 /// `payment`: a settle-up payment between two members.
@@ -160,6 +206,9 @@ pub enum DepositBody {
         id: DepositId,
         member: MemberId,
         amount: Cents,
+        /// The scheduled top-up this pays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        due: Option<Due>,
     },
     BuyOut {
         agreement: AgreementId,

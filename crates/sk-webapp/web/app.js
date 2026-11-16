@@ -338,6 +338,10 @@ function agreementPage(a) {
         h('p', { class: 'hint' }, 'Positive: the household owes them. Negative: they owe the household.')),
       h('div', { class: 'card' }, h('h2', {}, 'To settle up'),
         a.settle.length ? a.settle.map((s) => h('div', {}, s)) : h('p', { class: 'hint' }, 'Everyone is settled up.')),
+      a.deposits.length ? h('div', { class: 'card' }, h('h2', {}, 'Deposits and pots'),
+        a.deposits.map((d) => h('div', { class: 'row' },
+          h('div', { class: 'grow' }, h('div', {}, d.label), h('p', { class: 'hint' }, d.kind + ' · ' + d.detail)),
+          h('strong', {}, d.balance)))) : null,
     ];
   }
   if (S.tab === 'rules') {
@@ -347,6 +351,14 @@ function agreementPage(a) {
         h('div', { class: 'row' }, h('h2', { class: 'grow' }, r.name), h('span', { class: 'badge-pill' }, r.method)),
         h('p', { class: 'hint' }, r.detail))),
       a.rules.length ? null : h('p', { class: 'hint' }, 'No rules yet. Propose one: it takes effect once everyone approves.'),
+      h('div', { class: 'card' }, h('h2', {}, 'Recurring bills'),
+        a.recurring.map((r) => h('div', { class: 'row' },
+          h('div', { class: 'grow' }, h('div', {}, r.name), h('p', { class: 'hint' }, r.detail)),
+          r.stopped ? null : h('button', { class: 'link red', onclick: () => {
+            if (S.armed === 'stop' + r.id) { S.armed = null; sendNow('recurring', { op: 'stop', agreement: a.id, id: r.id }); } else { S.armed = 'stop' + r.id; toast('Tap Stop again to stop "' + r.name + '".'); }
+          } }, 'Stop'))),
+        a.recurring.length ? null : h('p', { class: 'hint' }, 'Rent, internet, electric: add them once and ShareKeep lists each one when it\'s due.'),
+        h('button', { class: 'btn secondary', onclick: () => recurringSheet(a) }, '+ Recurring bill')),
     ];
   }
   if (S.tab === 'periods') {
@@ -360,6 +372,14 @@ function agreementPage(a) {
       h('button', { class: 'btn', onclick: () => expenseSheet(a) }, '+ Expense'),
       h('button', { class: 'btn secondary', onclick: () => paymentSheet(a) }, 'Record payment')),
     h('p', { class: 'hint' }, 'This period: ' + a.period),
+    a.expected.length ? h('div', { class: 'card warn' }, h('h2', {}, 'Due'),
+      a.expected.map((x) => h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('div', {}, x.name + ' · ' + x.date + (x.overdue ? ' (overdue)' : '')), h('p', { class: 'hint' }, x.detail)),
+        x.kind === 'bill' ? h('button', { class: 'link', onclick: () => expenseSheet(a, x) }, 'Record')
+          : x.mine ? h('button', { class: 'link', onclick: () => sendNow('deposit', {
+            op: 'pay-in', agreement: a.id, id: x.deposit, member: S.member, amount: x.amount_cents,
+            due: { recurring: x.recurring, date: x.date_iso },
+          }) }, 'I paid') : null))) : null,
     ...a.activity.map((e) => h('div', { class: 'card' + (e.disputed ? ' warn' : '') },
       h('div', { class: 'row' },
         h('div', { class: 'grow' }, h('div', { class: 'v' }, e.title), h('p', { class: 'hint' }, e.date + ' · ' + e.detail + (e.disputed ? ' · disputed' : ''))),
@@ -446,10 +466,14 @@ function chipRow(people, chosen, pick) {
   return h('div', { class: 'chips' }, people.map((p) => h('button', { class: 'chip' + (p.id === chosen ? ' on' : ''), onclick: () => pick(p.id) }, p.name)));
 }
 
-function expenseSheet(a) {
+function expenseSheet(a, due) {
   const cur = S.view.currency;
   const e = { amount: '', category: '', date: S.view.today, note: '', payer: S.member };
-  openSheet('New expense', (body, close) => {
+  if (due) {
+    Object.assign(e, { amount: formatPlain(due.amount_cents, cur), category: due.category, date: due.date_iso, note: due.name });
+    if (due.member) e.payer = due.member;
+  }
+  openSheet(due ? 'Record ' + due.name : 'New expense', (body, close) => {
     const preview = h('div', {});
     const err = h('p', { class: 'error' });
     const save = h('button', { class: 'btn', disabled: true }, 'Save');
@@ -458,6 +482,7 @@ function expenseSheet(a) {
     const body_ = () => ({
       agreement: a.id, date: e.date, amount: parseAmount(e.amount, cur), payer: { member: e.payer },
       category: e.category.trim(), note: e.note.trim() || undefined,
+      due: due ? { recurring: due.recurring, date: due.date_iso } : undefined,
     });
     const check = () => {
       const b = body_();
@@ -487,10 +512,10 @@ function expenseSheet(a) {
     drawPayers();
     save.onclick = () => { close(); queue('expense', body_()); };
     body.append(
-      field('Amount', '', (v) => { e.amount = v; check(); }, { inputmode: 'decimal', placeholder: '0.00' }),
-      field('Category', '', (v) => { e.category = v; check(); }, { placeholder: 'Groceries' }),
+      field('Amount', e.amount, (v) => { e.amount = v; check(); }, { inputmode: 'decimal', placeholder: '0.00' }),
+      field('Category', e.category, (v) => { e.category = v; check(); }, { placeholder: 'Groceries' }),
       field('Date', e.date, (v) => { e.date = v; check(); }, { type: 'date' }),
-      field('Note (optional)', '', (v) => { e.note = v; }),
+      field('Note (optional)', e.note, (v) => { e.note = v; }),
       h('label', { class: 'field' }, 'Paid by'), payers,
       h('div', { class: 'card' }, h('h2', {}, 'How it divides'), preview, err),
       save);
@@ -520,6 +545,40 @@ function paymentSheet(a) {
         close();
         queue('payment', { agreement: a.id, date: S.view.today, from: p.from, to: p.to, amount });
       } }, 'Save'));
+  });
+}
+
+function recurringSheet(a) {
+  const cur = S.view.currency;
+  const r = { name: '', amount: '', category: 'Utilities', day: String(Number(S.view.today.slice(8, 10))), payer: S.member };
+  openSheet('Recurring bill', (body, close) => {
+    const payers = h('div', {});
+    const draw = () => payers.replaceChildren(chipRow(a.people, r.payer, (id) => { r.payer = id; draw(); }));
+    draw();
+    body.append(
+      field('Name', '', (v) => { r.name = v; }, { placeholder: 'Internet' }),
+      field('About how much', '', (v) => { r.amount = v; }, { inputmode: 'decimal', placeholder: '0.00' }),
+      field('Category', r.category, (v) => { r.category = v; }),
+      field('Day of the month it\'s due', r.day, (v) => { r.day = v; }, { inputmode: 'numeric' }),
+      h('label', { class: 'field' }, 'Usually paid by'), payers,
+      h('p', { class: 'hint' }, 'Each month it shows under Due until someone records it with the real amount.'),
+      h('button', { class: 'btn', onclick: async () => {
+        const amount = parseAmount(r.amount, cur);
+        const day = Number(r.day);
+        if (!r.name.trim()) return toast('Name it, like Internet.');
+        if (!amount) return toast('Type about how much, like 70.00.');
+        if (!(day >= 1 && day <= 31)) return toast('The day is 1 to 31.');
+        // a monthly schedule's start is its first due date: this month's
+        const [y, m] = S.view.today.split('-').map(Number);
+        const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        const start = S.view.today.slice(0, 8) + String(day >= 29 ? last : day).padStart(2, '0');
+        const ok = await sendNow('recurring', {
+          op: 'add', agreement: a.id, id: a.next_recurring, name: r.name.trim(),
+          schedule: { Monthly: { start, day: day >= 29 ? 'Last' : { Day: day }, every: 1 } },
+          what: { type: 'bill', amount, category: r.category.trim() || 'Bills', payer: r.payer },
+        });
+        if (ok) close();
+      } }, 'Add'));
   });
 }
 

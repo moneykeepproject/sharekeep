@@ -28,6 +28,9 @@ pub struct State {
     pub pay_from: Option<MemberId>,
     pub pay_to: Option<MemberId>,
     pub draft: Option<RuleDraft>,
+    /// The due items on screen, and the one the expense sheet records.
+    pub due: Vec<view::ExpectedRow>,
+    pub exp_due: Option<view::ExpectedRow>,
     pub pending: usize,
     pub refused: Vec<String>,
     pub problem: Option<String>,
@@ -83,6 +86,8 @@ impl State {
             pay_from: None,
             pay_to: None,
             draft: None,
+            due: Vec::new(),
+            exp_due: None,
             pending: 0,
             refused: Vec::new(),
             problem: None,
@@ -409,6 +414,42 @@ impl State {
                     })
                     .collect(),
             ));
+            self.due = view::expected(l, a, me, cur, self.today);
+            ui.set_due(model(
+                self.due
+                    .iter()
+                    .map(|d| DueS {
+                        name: s(&d.name),
+                        date: s(&d.date),
+                        detail: s(&d.detail),
+                        bill: d.kind == "bill",
+                        mine: d.mine,
+                        overdue: d.overdue,
+                    })
+                    .collect(),
+            ));
+            ui.set_deposits(model(
+                view::deposits(l, a, me, cur)
+                    .into_iter()
+                    .map(|d| DepositS {
+                        label: s(d.label),
+                        kind: s(d.kind),
+                        balance: s(d.balance),
+                        detail: s(d.detail),
+                    })
+                    .collect(),
+            ));
+            ui.set_recurring(model(
+                view::recurring(l, a, cur)
+                    .into_iter()
+                    .map(|r| RecurringS {
+                        id: r.id as i32,
+                        name: s(r.name),
+                        detail: s(r.detail),
+                        stopped: r.stopped,
+                    })
+                    .collect(),
+            ));
             let (members, settle) = view::members(l, a, cur);
             ui.set_members(model(members.into_iter().map(member_s).collect()));
             ui.set_settle(model(settle.into_iter().map(s).collect()));
@@ -466,10 +507,26 @@ impl State {
 
     pub fn open_expense(&mut self, ui: &AppWindow) {
         self.exp_payer = Some(self.me());
+        self.exp_due = None;
         ui.set_exp_amount(s(""));
         ui.set_exp_category(s(""));
         ui.set_exp_note(s(""));
         ui.set_exp_date(s(self.today.to_string()));
+        ui.set_exp_open(true);
+        self.refresh_expense(ui);
+    }
+
+    /// Record a due recurring bill: the expense sheet, filled in from it.
+    pub fn record_due(&mut self, ui: &AppWindow, i: i32) {
+        let Some(d) = self.due.get(i as usize).cloned() else {
+            return;
+        };
+        self.exp_payer = Some(d.member.unwrap_or(self.me()));
+        ui.set_exp_amount(s(self.cur.format_number(d.amount_cents)));
+        ui.set_exp_category(s(&d.category));
+        ui.set_exp_note(s(&d.name));
+        ui.set_exp_date(s(d.date_iso.to_string()));
+        self.exp_due = Some(d);
         ui.set_exp_open(true);
         self.refresh_expense(ui);
     }
@@ -487,14 +544,19 @@ impl State {
         if category.is_empty() {
             return Err("Type a category, like Groceries.".into());
         }
-        Ok(view::expense_body(
+        let mut e = view::expense_body(
             a,
             date,
             amount,
             self.exp_payer.unwrap_or(self.me()),
             &category,
             &ui.get_exp_note(),
-        ))
+        );
+        e.due = self.exp_due.as_ref().map(|d| sk_ledger::bodies::Due {
+            recurring: d.recurring,
+            date: d.date_iso,
+        });
+        Ok(e)
     }
 
     fn refresh_expense(&self, ui: &AppWindow) {
@@ -745,6 +807,28 @@ impl State {
                 }
             },
         );
+    }
+
+    /// My top-up is paid: a pay-in into the pot, for that due date.
+    pub fn paid_due(&self, i: i32) {
+        let (Some(a), Some(d)) = (self.agreement, self.due.get(i as usize)) else {
+            return;
+        };
+        let Some(dep) = d.deposit else { return };
+        self.send(Job::Send {
+            kind: "deposit".into(),
+            body: json!({"op": "pay-in", "agreement": a, "id": dep, "member": self.me(),
+                         "amount": d.amount_cents, "due": {"recurring": d.recurring, "date": d.date_iso}}),
+        });
+    }
+
+    pub fn stop_recurring(&self, id: i32) {
+        if let Some(a) = self.agreement {
+            self.send(Job::Send {
+                kind: "recurring".into(),
+                body: json!({"op": "stop", "agreement": a, "id": id}),
+            });
+        }
     }
 
     pub fn delete_entry(&self, seq: i32) {

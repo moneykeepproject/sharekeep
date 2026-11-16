@@ -172,3 +172,41 @@ fn the_web_apps_snapshot_has_every_screen() {
     assert_eq!(v["agreements"][0]["people"][0]["name"], "Jerry");
     assert_eq!(v["today"], "2027-03-14");
 }
+
+#[test]
+fn whats_due_deposits_and_recurring_items() {
+    let l = sk_view::demo::ledger(today());
+    let a = &view::snapshot(&l, JERRY, usd(), today()).agreements[0];
+    // last month's Electric and Internet were never recorded; this month's Electric was;
+    // Internet is due today; Sam's and Alex's top-ups are due, Jerry's is paid
+    let names: Vec<(&str, &str)> = a
+        .expected
+        .iter()
+        .map(|e| (e.name.as_str(), e.date.as_str()))
+        .collect();
+    assert!(names.contains(&("Internet", "Mar 14")), "{names:?}");
+    assert!(names.contains(&("Electric", "Feb 5")), "{names:?}");
+    assert!(!names.contains(&("Electric", "Mar 5")), "{names:?}");
+    let topups: Vec<_> = a
+        .expected
+        .iter()
+        .filter(|e| e.kind == "top-up" && e.date == "Mar 1")
+        .collect();
+    assert_eq!(topups.len(), 2);
+    assert!(topups.iter().all(|e| !e.mine), "they're Sam's and Alex's");
+    assert!(a.expected.iter().any(|e| e.overdue));
+    assert_eq!(a.deposits.len(), 2);
+    assert_eq!(a.deposits[1].balance, "$1,500.00");
+    assert_eq!(a.deposits[1].detail, "Your part: $600.00");
+    assert_eq!(a.recurring.len(), 3);
+    assert_eq!(a.next_recurring, 4);
+}
+
+#[test]
+fn a_recurring_bill_is_due_only_on_its_day() {
+    let l = sk_view::demo::ledger(today());
+    let a = &view::snapshot(&l, JERRY, usd(), today()).agreements[0];
+    for e in a.expected.iter().filter(|e| e.name == "Electric") {
+        assert!(e.date.ends_with(" 5"), "{}", e.date);
+    }
+}

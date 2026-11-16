@@ -17,6 +17,9 @@ export struct ExampleS { amount: string, rows: [SplitS] }
 export struct WeightS { name: string, value: float, included: bool, locked: bool }
 export struct ChoiceS { id: int, label: string, on: bool }
 export struct DeviceS { id: int, name: string, detail: string, revoked: bool }
+export struct DueS { name: string, date: string, detail: string, bill: bool, mine: bool, overdue: bool }
+export struct DepositS { label: string, kind: string, balance: string, detail: string }
+export struct RecurringS { id: int, name: string, detail: string, stopped: bool }
 export struct BookS { file: string, name: string, detail: string, encrypted: bool }
 
 // Vertically scrolling page, centred and capped in width for desktops.
@@ -176,6 +179,9 @@ export component AppWindow inherits Window {
     in property <[string]> settle;
     in property <[PeriodS]> periods;
     in property <[ApprovalS]> approvals;
+    in property <[DueS]> due;
+    in property <[DepositS]> deposits;
+    in property <[RecurringS]> recurring;
 
     // join a hub
     in-out property <string> hub-address;
@@ -262,6 +268,9 @@ export component AppWindow inherits Window {
     callback delete-entry(int);
     callback dispute-entry(int);
     callback dismiss-refused();
+    callback record-due(int);
+    callback paid-due(int);
+    callback stop-recurring(int);
     callback hub-set-pin();
     callback hub-new-book();
     callback hub-unlock(string);
@@ -366,6 +375,20 @@ export component AppWindow inherits Window {
                         BigButton { text: "Record payment"; primary: false; clicked => { root.add-payment(); } }
                     }
                     Hint { text: "This period: " + root.agreement-period; }
+                    if root.due.length > 0: Card {
+                        stripe: Theme.amber-line;
+                        SectionTitle { text: "Due"; }
+                        for d[i] in root.due: HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text { text: d.name + " · " + d.date + (d.overdue ? " (overdue)" : ""); color: Theme.ink; }
+                                Hint { text: d.detail; }
+                            }
+                            if d.bill: LinkButton { text: "Record"; clicked => { root.record-due(i); } }
+                            if !d.bill && d.mine: LinkButton { text: "I paid"; clicked => { root.paid-due(i); } }
+                        }
+                    }
                     for a in root.activity: Card {
                         stripe: a.disputed ? Theme.amber-line : transparent;
                         HorizontalLayout {
@@ -400,6 +423,17 @@ export component AppWindow inherits Window {
                         for s in root.settle: Text { text: s; color: Theme.ink; wrap: word-wrap; }
                         if root.settle.length == 0: Hint { text: "Everyone is settled up."; }
                     }
+                    if root.deposits.length > 0: Card {
+                        SectionTitle { text: "Deposits and pots"; }
+                        for d in root.deposits: HorizontalLayout {
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text { text: d.label; color: Theme.ink; }
+                                Hint { text: d.kind + " · " + d.detail; }
+                            }
+                            Text { text: d.balance; font-weight: 700; color: Theme.ink; vertical-alignment: center; }
+                        }
+                    }
                 }
                 if root.tab == 2: Page {
                     BigButton { text: "Propose a rule"; clicked => { root.new-rule(); } }
@@ -411,6 +445,18 @@ export component AppWindow inherits Window {
                         Hint { text: r.detail; }
                     }
                     if root.rules.length == 0: Hint { text: "No rules yet. Propose one: it takes effect once everyone approves."; }
+                    Card {
+                        SectionTitle { text: "Recurring bills"; }
+                        for r in root.recurring: HorizontalLayout {
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Text { text: r.name; color: r.stopped ? Theme.muted : Theme.ink; }
+                                Hint { text: r.detail; }
+                            }
+                            if !r.stopped: LinkButton { text: "Stop"; fg: Theme.red; clicked => { root.stop-recurring(r.id); } }
+                        }
+                        if root.recurring.length == 0: Hint { text: "None yet. Add them from the ShareKeep page on a phone or browser (Rules > + Recurring bill); each shows under Due when it's due."; }
+                    }
                 }
                 if root.tab == 3: Page {
                     for p in root.periods: Card {

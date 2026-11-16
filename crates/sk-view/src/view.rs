@@ -4,8 +4,9 @@
 use serde::Serialize;
 use serde_json::json;
 use sk_core::{AgreementId, Cents, Currency, DateSpan, MemberId, NaiveDate, RuleId};
-use sk_ledger::bodies::{Expense, Payer};
+use sk_ledger::bodies::{Expense, Payer, Repeats};
 use sk_ledger::{EntryKind, Ledger, ProposalKind, ProposalStatus};
+use sk_split::deposits::DepositKind;
 use sk_split::ledger::{settle_up, Paid};
 use sk_split::method::{split, Method, Rule, SplitInput, FULL_BP};
 use sk_split::periods::status;
@@ -392,6 +393,7 @@ pub fn expense_body(
         items: Vec::new(),
         days: BTreeMap::new(),
         usage: BTreeMap::new(),
+        due: None,
     }
 }
 
@@ -630,6 +632,155 @@ pub struct Person {
     pub name: String,
 }
 
+/// Something due: a recurring bill to record, or a member's pot top-up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExpectedRow {
+    pub recurring: u32,
+    pub name: String,
+    /// "Mar 5"
+    pub date: String,
+    pub date_iso: NaiveDate,
+    /// "bill" or "top-up"
+    pub kind: String,
+    pub amount: String,
+    pub amount_cents: Cents,
+    /// A top-up's member; a bill's usual payer.
+    pub member: Option<MemberId>,
+    pub detail: String,
+    /// A top-up this person pays, or any bill (anyone records it).
+    pub mine: bool,
+    pub category: String,
+    /// A top-up's pot.
+    pub deposit: Option<sk_core::DepositId>,
+    pub overdue: bool,
+}
+
+/// A deposit or pot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DepositRow {
+    pub id: sk_core::DepositId,
+    pub label: String,
+    /// "Held" or "Pot"
+    pub kind: String,
+    pub balance: String,
+    /// "Your part: $500.00"
+    pub detail: String,
+}
+
+/// A recurring item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecurringRow {
+    pub id: u32,
+    pub name: String,
+    pub detail: String,
+    pub stopped: bool,
+}
+
+/// What's due in an agreement for `me`.
+pub fn expected(
+    l: &Ledger,
+    a: AgreementId,
+    me: MemberId,
+    cur: Currency,
+    today: NaiveDate,
+) -> Vec<ExpectedRow> {
+    l.expected(a, today)
+        .into_iter()
+        .map(|e| {
+            let (kind, member, category, deposit) = match &e.what {
+                Repeats::Bill {
+                    category, payer, ..
+                } => ("bill", *payer, category.clone(), None),
+                Repeats::TopUp { deposit, .. } => {
+                    ("top-up", e.member, String::new(), Some(*deposit))
+                }
+            };
+            let detail = match (kind, member) {
+                ("top-up", Some(m)) => format!("{} puts in {}", name(l, m), money(cur, e.amount)),
+                (_, Some(m)) => format!(
+                    "About {} · usually paid by {}",
+                    money(cur, e.amount),
+                    name(l, m)
+                ),
+                _ => format!("About {}", money(cur, e.amount)),
+            };
+            ExpectedRow {
+                recurring: e.recurring,
+                name: e.name,
+                date: e.date.format("%b %-d").to_string(),
+                date_iso: e.date,
+                kind: kind.into(),
+                amount: money(cur, e.amount),
+                amount_cents: e.amount,
+                member,
+                detail,
+                mine: kind == "bill" || member == Some(me),
+                category,
+                deposit,
+                overdue: e.date < today,
+            }
+        })
+        .collect()
+}
+
+/// An agreement's deposits and pots, with my part of each.
+pub fn deposits(l: &Ledger, a: AgreementId, me: MemberId, cur: Currency) -> Vec<DepositRow> {
+    l.agreements
+        .get(&a)
+        .map(|g| {
+            g.deposits
+                .values()
+                .map(|(d, st)| DepositRow {
+                    id: d.id,
+                    label: d.label.clone(),
+                    kind: match d.kind {
+                        DepositKind::Held => "Held".into(),
+                        DepositKind::Spending => "Pot".into(),
+                    },
+                    balance: money(cur, st.balance()),
+                    detail: format!(
+                        "Your part: {}",
+                        money(cur, st.stakes().get(&me).copied().unwrap_or(0))
+                    ),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// An agreement's recurring bills and top-ups.
+pub fn recurring(l: &Ledger, a: AgreementId, cur: Currency) -> Vec<RecurringRow> {
+    l.agreements
+        .get(&a)
+        .map(|g| {
+            g.recurring
+                .values()
+                .map(|r| RecurringRow {
+                    id: r.id,
+                    name: r.name.clone(),
+                    detail: match (&r.what, r.stopped) {
+                        (_, Some(s)) => format!("Stopped {}", s.format("%b %-d, %Y")),
+                        (
+                            Repeats::Bill {
+                                amount, category, ..
+                            },
+                            None,
+                        ) => format!(
+                            "{category} · about {} · from {}",
+                            money(cur, *amount),
+                            r.added.format("%b %-d, %Y")
+                        ),
+                        (Repeats::TopUp { amounts, .. }, None) => {
+                            format!("Top-up · {} in all", money(cur, amounts.values().sum()))
+                        }
+                    },
+                    stopped: r.stopped.is_some(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// One agreement's screens.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgreementView {
@@ -648,6 +799,10 @@ pub struct AgreementView {
     /// The next rule id and when a new rule would start (the next period).
     pub next_rule: RuleId,
     pub next_period: NaiveDate,
+    pub expected: Vec<ExpectedRow>,
+    pub deposits: Vec<DepositRow>,
+    pub recurring: Vec<RecurringRow>,
+    pub next_recurring: u32,
 }
 
 /// Everything a device's screens show, for `me` on `today`.
@@ -705,6 +860,10 @@ pub fn snapshot(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> Sn
                 i_owe,
                 next_rule: RuleId(next_rule),
                 next_period: current.and_then(|p| p.last.succ_opt()).unwrap_or(today),
+                expected: expected(l, a.id, me, cur, today),
+                deposits: deposits(l, a.id, me, cur),
+                recurring: recurring(l, a.id, cur),
+                next_recurring: a.recurring.keys().next_back().map_or(1, |k| k + 1),
             }
         })
         .collect();

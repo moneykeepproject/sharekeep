@@ -64,9 +64,28 @@ by category, entries (disputed rows highlighted), page numbers. The hub saves it
 `statements/<book id>/<agreement>-<first>-<last>.pdf`; in a Hyperbook it then appends a `seal`
 record with the PDF's SHA-256. Devices download it from `/api/v1/statements/<agreement>/<first>`.
 
+## Recurring bills and pot top-ups (`recurring`)
+
+`{"op": "add", "agreement", "id", "name", "schedule", "what"}` where `what` is
+`{"type": "bill", "amount", "category", "payer"?}` or `{"type": "top-up", "deposit", "amounts":
+{member: cents}}` (a spending deposit only); `{"op": "stop", "agreement", "id"}`. Any member adds
+or stops one (online). A schedule's `start` is its first due date.
+
+They post nothing by themselves: `Ledger::expected(agreement, today)` lists each occurrence from
+the day it was added (up to 92 days back, 7 ahead, never in a closed period) that hasn't been
+recorded: a bill once, a top-up once per active member. An expense with `"due": {"recurring",
+"date"}` records a bill (the real amount may differ); a deposit pay-in with the same `due`
+records a member's top-up. Each occurrence is recorded once; deleting the expense makes it due
+again. The screens show these under **Due** with Record / I paid.
+
+## Interest on held deposits
+
+When a period closes and the book's `deposit_interest_bp` setting is above 0, each held deposit
+is credited simple interest on its balance for the period's days (rounded down to the cent),
+shared by the members' stakes. Replaying the history gives the same amounts.
+
 ## Not yet
 
-Spending-deposit top-ups on a schedule, interest crediting on a schedule, and recurring bills
-posting expected entries. The 4b screens don't offer deposits, events, joining, leaving or
-schedule changes yet either (the engine and the hub accept them); they come with the web app
-(4c), whose screens the desktop app shares.
+Screens for creating deposits, special events, people joining or leaving, schedule changes and
+entry edits (the engine and the hub accept them; the hub computer and the web app will offer
+them next); the rule editor's other methods (exact amounts, itemized, by room, days, usage).
