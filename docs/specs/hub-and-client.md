@@ -30,13 +30,23 @@ pairing code copied from MoneyKeep).
   has migrations; a newer one is refused with a message to update).
 - **Records**: a device reads its book's history in pages (≤ 1,000) and adds records of the
   device kinds (expense, payment, approval, dispute, entry-edit, entry-delete,
-  rule-proposal, deposit, member-join, member-leave, period-close, schedule). Since 4a every
+  rule-proposal, deposit, member-join, member-leave, period-close, schedule, recurring,
+  restore-accept). Since 4a every
   record is checked by the agreement engine first (`docs/specs/agreement-engine.md`). The hub stamps each
   record with the device's member and name; a request id makes a resend return the first
   record instead of adding another. Bodies must be JSON objects. The hub computer may also
   add member-add, agreement-add and schedule records and change book settings.
 - **Encrypted books** stay locked after a restart until someone at the hub computer enters
   the password (or recovery key); devices get "locked" (423) meanwhile.
+- **Backups**: one a day, made with the day's first change, in `backups/`.
+- **Guided recovery**: a Hyperbook that doesn't verify is listed with `broken: N` and isn't
+  opened. The hub computer's admin port answers `POST books/<file>/recovery` (the problem and
+  every backup, checked), `lost {backup}` (the broken book's records after the backup: what
+  restoring it loses, unverified), `export-broken` (the history as it is) and `restore
+  {backup}`: a restored copy becomes the open book, the broken file is set aside, and a hub
+  `restore` record is appended. Nothing is deleted.
+- **Verify and CSV** for the web app: `GET /api/v1/verify` and
+  `GET /api/v1/csv/<agreement>/<first day>` (`{file, text}`).
 - **Keys** (the authority's and the server's) are files in `keys/` readable only by the
   hub's account. Logs carry method, path and status only.
 
@@ -50,8 +60,12 @@ pairing code copied from MoneyKeep).
   the person to see.
 - **Replica**: the device's copy of the history, checked as it loads and as it syncs. Each
   sync asks again for the device's own head: if the hub no longer has it unchanged, the
-  history was rewritten — the sync stops, warns, and keeps the copy as it was. "Last synced"
-  is kept for the offline banner.
+  history was rewritten — the sync stops, warns, and keeps the copy as it was. If the hub's
+  history has a `restore` continuing from a record this device has unchanged, the sync
+  answers `Restored` with an offer instead (which records aren't in the backup);
+  `accept_restore` drops the device's later records, fetches the hub's, and the app then
+  submits `restore-accept`. Until then the device sends nothing. "Last synced" is kept for
+  the offline banner and "This device last saw record N on <date>".
 
 ## Later (milestone 4)
 

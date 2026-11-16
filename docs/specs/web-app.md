@@ -49,4 +49,17 @@ local storage for this site only.
 `cargo test -p sk-webapp` checks the files; the hub's tests fetch the app over TLS and check
 the three endpoints. `crates/sk-webapp/browser-test.py` runs the whole app in headless Chrome
 against a real hub (pairing from the QR link, an expense with its split, a percentage rule,
-a payment made offline and sent later); it needs Python's playwright and is not part of CI.
+a payment made offline and sent later, exact and itemized rules, an itemized receipt, the
+first checkpoint offered after pairing, Verify, checking a kept and a changed checkpoint, and
+a period's CSV); it needs Python's playwright and is not part of CI.
+
+## Hyperbook
+
+- The app remembers the last head it saw (`seen`). Each sync asks the hub for that record;
+  if it changed, a `restore` covering it becomes an offer (Accept, read-only until then),
+  otherwise a warning that the history was changed.
+- Settings > Hyperbook: the head, "last saw", Save a checkpoint (copy, save as a file),
+  Check a checkpoint (against the hub), Check a statement (`crypto.subtle` SHA-256 of a
+  picked PDF, matched against the view's seals; the file stays on the device). The first
+  checkpoint is offered after pairing and after closing a period.
+- Settings > Verify (`/api/v1/verify`); Periods > Export to a spreadsheet (CSV).

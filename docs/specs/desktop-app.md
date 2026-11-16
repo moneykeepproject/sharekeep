@@ -81,3 +81,21 @@ No tabs or other screens while it runs; Back where going back makes sense.
   Hub tab): 1 Choose the household PIN, 2 Create the household's book, 3 Add the people (at
   least two), 4 Create your first agreement, 5 Pair the first device. The step follows where
   setup stands (a step already done is skipped), so EZ Start resumes where it was left.
+
+## Hyperbook, Verify, recovery
+
+- Settings > Hyperbook: the head (record and fingerprint), "This device last saw record N on
+  <date>" (a quiet line after 30 days), Save a checkpoint (text, QR code, save as a file),
+  Check a checkpoint (this device's copy, then the hub), Check a statement (a PDF from an
+  open dialog, hashed by the worker). Offered as a toast after pairing and after closing a
+  period.
+- Settings > Verify runs `sk_ledger::audit` on this device's own copy.
+- Periods: Export to a spreadsheet (CSV), written by the worker.
+- A restored backup shows on Home and Settings with "Accept and carry on"; nothing is sent
+  before.
+- Hub tab: a broken book has "Recover": its backups (checked), what a backup loses, Restore
+  it, and Save the broken history as it is.
+- One form sheet (`forms.rs`) for deposits and pots, pay-ins, refunds, buy-outs and
+  deductions, recurring bills, special events, schedule changes, joining and leaving.
+- Lists with text fields (days, usage, receipt lines, exact amounts) are updated row by row,
+  so a field keeps the cursor while someone types.

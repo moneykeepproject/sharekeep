@@ -57,12 +57,30 @@ their share, payments made or received, cap adjustments and running balance, eve
 (disputed ones marked), and the payments that settle everyone up. Event entries settle on
 their own and aren't on a period's statement.
 
+## Restores (Hyperbooks)
+
+`restore` is written only by the hub when it carries on from a backup (guided recovery): it
+names the backup and the record it continues from (`restored_to {seq, hash}`, which must be
+the record right before it) and where the broken book broke. `restore-accept {restore}` is a
+device's acceptance; the ledger lists each restore with the members who accepted it.
+
+## Verify (`sk_ledger::audit`)
+
+Two answers from the records alone: "Has the history been changed?" (Hyperbooks: the chain
+verifies) and "Do the numbers add up?" (every record replays under the rules, every expense's
+shares add up to its amount to the cent, every seal names a record whose fingerprint matches).
+
 ## Statement PDFs (`sk-report`)
 
 US Letter, built-in Helvetica (GroupKeep's page writer), header band, "Who owes whom", members,
 by category, entries (disputed rows highlighted), page numbers. The hub saves it as
 `statements/<book id>/<agreement>-<first>-<last>.pdf`; in a Hyperbook it then appends a `seal`
 record with the PDF's SHA-256. Devices download it from `/api/v1/statements/<agreement>/<first>`.
+Every statement prints "History at closing: record N • fingerprint …" (the period-close
+record's head), and "Check a statement" (Hyperbooks) matches a PDF's SHA-256 against the
+seals. A period also exports as CSV (`sk_view::view::csv`): each entry with what it moved
+for each member and their running balances, opening and closing rows, and in a Hyperbook the
+head at export on the last line.
 
 ## Recurring bills and pot top-ups (`recurring`)
 
@@ -84,10 +102,13 @@ When a period closes and the book's `deposit_interest_bp` setting is above 0, ea
 is credited simple interest on its balance for the period's days (rounded down to the cent),
 shared by the members' stakes. Replaying the history gives the same amounts.
 
-## Not yet
+## Screens
 
-Screens: the rule editor offers equal, percentages, shares, by income, by room, by days present
-and by usage (an expense under a days or usage rule asks for each person's days or reading:
-the hub's preview answers `needs`). Not in the editor yet: exact amounts and itemized (an
-expense's receipt lines). The desktop app creates deposits, recurring bills, events and
-schedule changes only through the web app for now. The engine and the hub accept all of it.
+The rule editor (desktop and web) offers every method: equal, percentages, shares, by income,
+by room, by days present, by usage, exact amounts (a fixed amount for each person, one person
+takes whatever is left; the examples add a sample to the fixed total so something is left) and
+itemized. An expense under a days, usage or itemized rule asks for each person's days, their
+reading, or the receipt's lines and who shares each (tax and tip, the amount minus the lines,
+follow the lines): the hub's preview answers `needs` with kind `days`, `usage` or `items`.
+Both apps create deposits and pots, pay-ins, refunds, buy-outs and deductions, recurring
+bills, special events, schedule changes, joining and leaving.

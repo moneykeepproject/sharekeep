@@ -50,8 +50,21 @@ What `sk-chain` and `sk-store` must do. From the owner's "ShareKeep Design Spec 
   encrypted); a restore makes a separate copy `<name> restored <label>.sharekeep` and never
   replaces anything.
 
+## Checkpoints (`sk_chain::checkpoint`)
+
+A head written as one line, `ShareKeep checkpoint · <book> · record N · <date> · <64 hex>`,
+and a QR code, for keeping outside the house. `parse` is forgiving (case, spaces, line breaks
+inside the fingerprint; a book named "Records"). `check` answers kept, rewritten, or missing
+(the history ends earlier). The hub doesn't store checkpoints: it is the party being checked.
+
+## Recovery
+
+`Store::open_for_recovery` opens a book without verifying it (reading only).
+`scan_backups(dir, book_id)` lists a book's backups newest first, each checked (ok, broken at
+record N, or unreadable). `set_aside_broken` renames a broken book to
+`<name> (broken <date>).sharekeep-broken`, which no longer loads as a book but is kept.
+
 ## Later
 
-Changing an encrypted book's password or recovery key, copying a normal book into a new
-Hyperbook, and the books and backups folders' default locations come with the household
-service (milestone 3).
+Changing an encrypted book's password or recovery key and copying a normal book into a new
+Hyperbook.
