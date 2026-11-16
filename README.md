@@ -3,8 +3,8 @@
 Keep a household's shared money: partners, roommates, or a parent and an adult child
 sharing a home. Part of the MoneyKeep family (Rust + Slint).
 
-**Status: in development.** Milestones 1 and 2 are the split engine, the Hyperbook chain and
-the book files; there is no app to run yet.
+**Status: in development.** Milestones 1–3: the split engine, the Hyperbook chain, the book
+files, the household service and its client. There is no desktop app yet.
 
 ## Build & test
 
@@ -24,6 +24,8 @@ cargo run -p sk-chain --bin sk-verify -- history.jsonl   # check an exported Hyp
 | `crates/sk-split/tests/properties.rs` | Property tests: thousands of seeded random cases. |
 | `crates/sk-chain/` | The Hyperbook hash chain; `sk-verify`, a tool that checks an exported history. |
 | `crates/sk-store/` | Book files: SQLite, append-only history, optional encryption, backups and restored copies. |
+| `crates/sk-hub/` | The household service (`sharekeep-hub`): HTTPS on the home Wi-Fi with its own certificate authority, pairing (code + PIN), devices, records. |
+| `crates/sk-client/` | The desktop app's side: HTTPS to the hub, the offline outbox, the checked local copy of a book's history. |
 | `xtask/` | `cargo xtask ci`, `workflows`, `guards`. |
 | `docs/specs/` | What the implemented parts must do. |
 
@@ -33,7 +35,7 @@ cargo run -p sk-chain --bin sk-verify -- history.jsonl   # check an exported Hyp
 |---|---|
 | 1 (done) | `sk-core`, `sk-split` |
 | 2 (done) | `sk-chain` (Hyperbook hash chain), `sk-store` (SQLite book files) |
-| 3 | `sk-hub` (household service, pairing), `sk-client` (API client, outbox) |
+| 3 (done) | `sk-hub` (household service, pairing), `sk-client` (API client, outbox) |
 | 4 | `sk-ui`, `sharekeep-app` (Windows, macOS), `sk-webapp` (phones and PC browsers), `sk-report` (PDFs), installers |
 
 ## Licence

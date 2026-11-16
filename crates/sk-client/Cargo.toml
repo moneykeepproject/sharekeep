@@ -1,0 +1,19 @@
+[package]
+name = "sk-client"
+description = "ShareKeep client of the household service: HTTPS trusting only the hub's certificate authority, the outbox, and the local copy of a book's history"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sk-core.workspace = true
+sk-chain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rustls.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

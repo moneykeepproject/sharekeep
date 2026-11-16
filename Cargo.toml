@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sk-core", "crates/sk-split", "crates/sk-chain", "crates/sk-store", "xtask"]
+members = ["crates/sk-core", "crates/sk-split", "crates/sk-chain", "crates/sk-store", "crates/sk-hub", "crates/sk-client", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,8 @@ repository = "https://github.com/moneykeepproject/sharekeep"
 [workspace.dependencies]
 sk-core = { path = "crates/sk-core" }
 sk-chain = { path = "crates/sk-chain" }
+sk-store = { path = "crates/sk-store" }
+sk-client = { path = "crates/sk-client" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
@@ -26,6 +28,14 @@ getrandom = "0.3"
 unicode-normalization = "0.1"
 fs4 = { version = "0.13", features = ["sync"] }
 tempfile = "3"
+# The household service (as MoneyKeep's capture server): HTTP/1.1 on loopback, TLS
+# (rustls with ring) in front of it on the Wi-Fi address, the local certificate
+# authority made with rcgen.
+tiny_http = { version = "0.12", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+base64 = "0.22"
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 
 # Key derivation is deliberately expensive; optimise it even in debug builds so the
 # tests that open encrypted books stay quick (as in MoneyKeep).

@@ -330,3 +330,46 @@ fn settings_seals_and_export() {
     let records = sk_chain::import_lines(&text).unwrap();
     assert_eq!(sk_chain::verify(&records).unwrap(), store.head().unwrap());
 }
+
+#[test]
+fn a_resent_request_adds_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = Store::create(dir.path(), new_book("Home", true, None)).unwrap();
+    let mut store = c.store;
+    let (a, fresh) = store
+        .append_once("dev3:abc-1", 10, jerry(), "expense", json!({"amount": 500}))
+        .unwrap();
+    assert!(fresh);
+    let (b, fresh) = store
+        .append_once("dev3:abc-1", 99, jerry(), "expense", json!({"amount": 999}))
+        .unwrap();
+    assert!(!fresh);
+    assert_eq!(a, b);
+    assert_eq!(store.head(), Some(a.head()));
+    assert!(store
+        .append_once("bad id!", 1, jerry(), "expense", json!({}))
+        .is_err());
+    store
+        .append(11, jerry(), "member-add", json!({"id": 2, "name": "Sam"}))
+        .unwrap();
+    assert!(store.has_record_with("member-add", "id", 2).unwrap());
+    assert!(!store.has_record_with("member-add", "id", 3).unwrap());
+}
+
+#[test]
+fn a_version_1_book_is_upgraded_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = Store::create(dir.path(), new_book("Home", true, None)).unwrap();
+    let head = c.store.head();
+    drop(c.store);
+    // make it look like a book from the first release
+    tamper(
+        &c.path,
+        "DROP TABLE client_ids; UPDATE meta SET value = '1' WHERE key = 'schema_version';",
+    );
+    let mut store = Store::open(&c.path, None).unwrap();
+    assert_eq!(store.head(), head);
+    store
+        .append_once("d:1", 1, jerry(), "expense", json!({"amount": 1}))
+        .unwrap();
+}

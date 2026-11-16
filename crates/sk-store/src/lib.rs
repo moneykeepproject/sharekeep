@@ -34,7 +34,7 @@ pub use crypt::Secret;
 /// The file extension of a book.
 pub const EXTENSION: &str = "sharekeep";
 /// The schema this build writes.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 const FORMAT: &str = "sharekeep-book";
 
 /// Why a book can't be made, opened or changed.
@@ -446,6 +446,9 @@ const MIGRATIONS: &[&str] = &[
          BEGIN SELECT RAISE(ABORT, 'the history is append-only'); END;
      CREATE TRIGGER records_no_delete BEFORE DELETE ON records
          BEGIN SELECT RAISE(ABORT, 'the history is append-only'); END;",
+    // 1 → 2: which record a device's request made, so a resent request (an outbox
+    // retry) never adds a second record
+    "CREATE TABLE client_ids (client_id TEXT PRIMARY KEY, seq INTEGER NOT NULL);",
 ];
 
 fn schema_version(conn: &Connection) -> StoreResult<u32> {
@@ -861,6 +864,75 @@ impl Store {
         Ok(rec)
     }
 
+    /// Append once per `client_id` (a device's id for one request): a resent request
+    /// returns the record the first one made, and `false`. The author is whoever the hub
+    /// says sent it, never what the request claims.
+    pub fn append_once(
+        &mut self,
+        client_id: &str,
+        ts: i64,
+        author: Author,
+        kind: &str,
+        body: Value,
+    ) -> StoreResult<(Record, bool)> {
+        let ok_id = (1..=128).contains(&client_id.len())
+            && client_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_:.".contains(&b));
+        if !ok_id {
+            return Err(StoreError::Invalid("that request id isn't valid".into()));
+        }
+        let seen: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT seq FROM client_ids WHERE client_id = ?1",
+                [client_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(seq) = seen {
+            let rec = self
+                .records(seq as u64, 1)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| StoreError::Corrupt("a request's record is missing".into()))?;
+            return Ok((rec, false));
+        }
+        if kind == sk_chain::GENESIS {
+            return Err(StoreError::Invalid(
+                "a book has only one first record".into(),
+            ));
+        }
+        let rec = sk_chain::next(self.head.as_ref(), ts, author, kind, body)?;
+        {
+            let tx = self.conn.transaction()?;
+            insert_record(&tx, &rec)?;
+            tx.execute(
+                "INSERT INTO client_ids (client_id, seq) VALUES (?1, ?2)",
+                rusqlite::params![client_id, rec.seq as i64],
+            )?;
+            tx.commit()?;
+        }
+        let before = self.head.replace(rec.clone());
+        if let Err(e) = self.save() {
+            self.head = before;
+            return Err(e);
+        }
+        Ok((rec, true))
+    }
+
+    /// Whether the history has a record of `kind` whose body's `field` equals `value`
+    /// (e.g. a `member-add` with that member id).
+    pub fn has_record_with(&self, kind: &str, field: &str, value: i64) -> StoreResult<bool> {
+        let path = format!("$.{field}");
+        let n: i64 = self.conn.query_row(
+            "SELECT count(*) FROM records WHERE kind = ?1 AND json_extract(body, ?2) = ?3",
+            rusqlite::params![kind, path, value],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
     /// Change a book setting (see [`SETTINGS`]); the change is a history record.
     pub fn set_setting(
         &mut self,
@@ -1030,9 +1102,11 @@ mod tests {
     fn migrations_run_in_order_from_any_version() {
         let mut conn = memory_connection().unwrap();
         migrate(&mut conn, &MIGRATIONS[..1]).unwrap();
-        let later = [MIGRATIONS[0], "CREATE TABLE extra (x INTEGER);"];
+        assert_eq!(schema_version(&conn).unwrap(), 1);
+        let mut later = MIGRATIONS.to_vec();
+        later.push("CREATE TABLE extra (x INTEGER);");
         migrate(&mut conn, &later).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(schema_version(&conn).unwrap(), 3);
         conn.execute("INSERT INTO extra (x) VALUES (1)", [])
             .unwrap();
     }
