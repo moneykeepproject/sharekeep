@@ -265,3 +265,25 @@ fn a_waiting_schedule_change_is_shown() {
         "Every month, on the 1st. From Apr 1: every 2 weeks, on Friday"
     );
 }
+
+#[test]
+fn rules_by_room_days_and_usage() {
+    let l = sk_view::demo::ledger(today());
+    let mut d = RuleDraft::new(&l, A);
+    d.name = "Electric".into();
+    d.set_method(4);
+    d.set_value(0, 30.0);
+    d.set_value(1, 20.0);
+    d.set_value(2, 10.0);
+    let ex = view::examples(&d.rule(), &l, usd()).unwrap();
+    assert_eq!(ex[1].1[0].amount, "$50.00", "room sizes 30/20/10 of $100");
+    d.set_method(5);
+    assert!(!view::method_weighted(5));
+    let ex = view::examples(&d.rule(), &l, usd()).unwrap();
+    // sample days 30/20/10
+    assert_eq!(ex[1].1[0].name, "Jerry (30 days)");
+    assert_eq!(ex[1].1[0].amount, "$50.00");
+    d.set_method(6);
+    let ex = view::examples(&d.rule(), &l, usd()).unwrap();
+    assert!(ex[1].1[1].name.ends_with("used)"));
+}

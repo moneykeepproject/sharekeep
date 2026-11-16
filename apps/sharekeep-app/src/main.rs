@@ -155,6 +155,10 @@ fn wire(ui: &AppWindow) {
     on!(on_add_expense, |st, u| st.open_expense(u));
     on!(on_expense_changed, |st, u| st.refresh(u));
     on!(on_payer_picked, |st, u, id: i32| st.payer_picked(u, id));
+    on!(
+        on_exp_need_edited,
+        |st, u, i: i32, t: slint::SharedString| st.need_edited(u, i, &t)
+    );
     on!(on_save_expense, |st, u| st.save_expense(u));
     on!(on_add_payment, |st, u| st.open_payment(u));
     on!(on_pay_from_picked, |st, u, id: i32| st

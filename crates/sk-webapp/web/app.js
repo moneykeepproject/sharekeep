@@ -4,7 +4,17 @@
 'use strict';
 
 const SYNC_EVERY_MS = 30000;
-const METHODS = ['Equal', 'Percentages', 'Shares', 'By income'];
+const METHODS = ['Equal', 'Percentages', 'Shares', 'By income', 'By room', 'By days present', 'By usage'];
+// per method: has sliders, slider top, unit, a line of help (the desktop app's sk-view says the same)
+const METHOD_INFO = [
+  { sliders: false },
+  { sliders: true, max: 100, unit: '%' },
+  { sliders: true, max: 10, unit: ' share(s)' },
+  { sliders: true, max: 10, unit: ' part(s)', hint: 'Income as parts, no salaries needed: 64 and 36 split like the incomes.' },
+  { sliders: true, max: 50, unit: ' (room size)', hint: "Each person's room: its size, or what it would rent for alone." },
+  { sliders: false, hint: 'Each expense asks how many days each person was home in the period.' },
+  { sliders: false, hint: "Each expense asks for each person's meter reading or usage count." },
+];
 
 // ----- small helpers -------------------------------------------------------------------------
 
@@ -586,13 +596,15 @@ function chipRow(people, chosen, pick) {
 
 function expenseSheet(a, due, editing) {
   const cur = S.view.currency;
-  const e = { amount: '', category: '', date: S.view.today, note: '', payer: S.member, event: null };
+  const e = { amount: '', category: '', date: S.view.today, note: '', payer: S.member, event: null, needs: null, values: {} };
   if (editing) {
     const x = editing.expense;
     Object.assign(e, {
       amount: formatPlain(x.amount, cur), category: x.category, date: x.date, note: x.note || '',
       payer: x.payer.member || S.member, event: x.event == null ? null : x.event,
     });
+    for (const [m, v] of Object.entries(x.days || {})) e.values[m] = String(v);
+    for (const [m, v] of Object.entries(x.usage || {})) e.values[m] = String(v);
   }
   if (due) {
     Object.assign(e, { amount: formatPlain(due.amount_cents, cur), category: due.category, date: due.date_iso, note: due.name });
@@ -609,7 +621,23 @@ function expenseSheet(a, due, editing) {
       category: e.category.trim(), note: e.note.trim() || undefined,
       due: due ? { recurring: due.recurring, date: due.date_iso } : editing ? editing.expense.due : undefined,
       event: e.event == null ? undefined : e.event,
+      // a rule by days or usage: what each person typed
+      days: e.needs === 'days' ? numbers() : undefined,
+      usage: e.needs === 'usage' ? numbers() : undefined,
     });
+    const numbers = () => Object.fromEntries(Object.entries(e.values)
+      .filter(([, v]) => /^\d+$/.test(String(v).trim())).map(([m, v]) => [m, Number(v)]));
+    const needsBox = h('div', {});
+    const drawNeeds = (n) => {
+      if (!n) { e.needs = null; needsBox.replaceChildren(); return; }
+      if (e.needs === n.kind && needsBox.childElementCount) return;
+      e.needs = n.kind;
+      // values already there (an edit) count at once
+      if (Object.keys(e.values).length) setTimeout(check, 0);
+      needsBox.replaceChildren(h('div', { class: 'card' },
+        h('h2', {}, n.rule + ': ' + (n.kind === 'days' ? 'days each person was home' : "each person's usage or meter reading")),
+        n.who.map((p) => field(p.name, e.values[p.id] || '', (v) => { e.values[p.id] = v; check(); }, { inputmode: 'numeric' }))));
+    };
     const check = () => {
       const b = body_();
       let why = '';
@@ -625,9 +653,10 @@ function expenseSheet(a, due, editing) {
         try {
           // an edit's own recurring-bill mark would read as "already recorded": the split is the same without it
           const p = await api('POST', '/api/v1/preview', { expense: editing ? Object.assign({}, b, { due: undefined }) : b });
+          drawNeeds(p.needs);
           preview.replaceChildren(...p.rows.map((r) => kv(r.name, r.amount)));
-          err.textContent = '';
-          save.disabled = false;
+          err.textContent = p.error || '';
+          save.disabled = !!p.error;
         } catch (x) {
           // offline: no preview, but it can still wait in the outbox
           err.textContent = x.status === 0 ? 'Offline: the split shows once the hub has it.' : x.message;
@@ -659,7 +688,7 @@ function expenseSheet(a, due, editing) {
       field('Category', e.category, (v) => { e.category = v; check(); }, { placeholder: 'Groceries' }),
       field('Date', e.date, (v) => { e.date = v; drawEvents(); check(); }, { type: 'date' }),
       field('Note (optional)', e.note, (v) => { e.note = v; }),
-      h('label', { class: 'field' }, 'Paid by'), payers, events,
+      h('label', { class: 'field' }, 'Paid by'), payers, events, needsBox,
       h('div', { class: 'card' }, h('h2', {}, 'How it divides'), preview, err),
       save);
     check();
@@ -742,10 +771,14 @@ function depositMoveSheet(a, dep) {
     const kinds = h('div', {});
     const extra = h('div', {});
     const draw = () => {
-      kinds.replaceChildren(chipRow([{ id: 'refund', name: 'Paid back' }, { id: 'buy-out', name: 'Bought out' }], m.what, (k) => { m.what = k; draw(); }));
+      kinds.replaceChildren(chipRow([{ id: 'refund', name: 'Paid back' }, { id: 'buy-out', name: 'Bought out' }, { id: 'deduct', name: 'Kept back' }], m.what, (k) => { m.what = k; draw(); }));
       extra.replaceChildren(...(m.what === 'buy-out' ? [
         h('label', { class: 'field' }, 'Whose part'), chipRow(a.people, m.from, (id) => { m.from = id; draw(); }),
         h('label', { class: 'field' }, 'Bought by'), chipRow(a.people, m.to, (id) => { m.to = id; draw(); }),
+      ] : m.what === 'deduct' ? [
+        h('p', { class: 'hint' }, 'Money the landlord or utility kept (damage, a final bill), taken from one person\'s part.'),
+        h('label', { class: 'field' }, 'From whose part'), chipRow(a.people, m.from, (id) => { m.from = id; draw(); }),
+        field('Why (optional)', m.reason || '', (v) => { m.reason = v; }, { placeholder: 'Carpet cleaning' }),
       ] : [h('p', { class: 'hint' }, 'What the landlord or utility paid back: shared out by each person\'s part.')]));
     };
     draw();
@@ -755,7 +788,9 @@ function depositMoveSheet(a, dep) {
         if (!amount) return toast('Type the amount.');
         const b = m.what === 'refund'
           ? { op: 'refund', agreement: a.id, id: dep.id, amount }
-          : { op: 'buy-out', agreement: a.id, id: dep.id, from: m.from, to: m.to, amount };
+          : m.what === 'deduct'
+            ? { op: 'deduct', agreement: a.id, id: dep.id, shares: { [m.from]: amount }, reason: (m.reason || '').trim() || undefined }
+            : { op: 'buy-out', agreement: a.id, id: dep.id, from: m.from, to: m.to, amount };
         if (m.what === 'buy-out' && m.from === m.to) return toast('Pick two different people.');
         if (await sendNow('deposit', b)) close();
       } }, 'Save'));
@@ -862,7 +897,8 @@ function ruleSheet(a) {
   };
   const rule = () => {
     const weights = (scale) => Object.fromEntries(d.rows.map((r) => [String(r.id), Math.max(0, Math.round(r.value * scale))]));
-    const method = [() => 'Equal', () => ({ Percent: weights(100) }), () => ({ Shares: weights(1) }), () => ({ Income: weights(1) })][d.method]();
+    const method = [() => 'Equal', () => ({ Percent: weights(100) }), () => ({ Shares: weights(1) }), () => ({ Income: weights(1) }),
+      () => ({ Room: weights(1) }), () => 'Days', () => 'Usage'][d.method]();
     return { name: d.name.trim(), method, members: d.rows.map((r) => r.id), excluded: d.rows.filter((r) => !r.included).map((r) => r.id) };
   };
   setMethod(0);
@@ -888,13 +924,15 @@ function ruleSheet(a) {
     const draw = () => {
       methods.replaceChildren(h('div', { class: 'chips' }, METHODS.map((m, i) => h('button', { class: 'chip' + (d.method === i ? ' on' : ''), onclick: () => { setMethod(i); draw(); } }, m))));
       const pct = d.method === 1;
-      rows.replaceChildren(h('h2', {}, pct ? 'Percentages (always total 100%)' : 'Who shares'), ...d.rows.map((r, i) => h('div', { class: 'slider' },
+      const info = METHOD_INFO[d.method];
+      rows.replaceChildren(h('h2', {}, pct ? 'Percentages (always total 100%)' : 'Who shares'),
+        info.hint ? h('p', { class: 'hint' }, info.hint) : null, ...d.rows.map((r, i) => h('div', { class: 'slider' },
         h('div', { class: 'row' },
           h('label', { class: 'switch grow' }, h('input', { type: 'checkbox', checked: r.included, onchange: () => { r.included = !r.included; if (pct) setMethod(1); draw(); } }), r.name),
-          h('span', {}, !r.included ? 'opted out' : pct ? Math.round(r.value) + '%' : d.method === 0 ? '' : Math.round(r.value) + ' share(s)'),
+          h('span', {}, !r.included ? 'opted out' : info.sliders ? Math.round(r.value) + info.unit : ''),
           pct && r.included ? h('button', { class: 'link' + (r.locked ? ' amber' : ''), onclick: () => { r.locked = !r.locked; draw(); } }, r.locked ? 'Locked' : 'Lock') : null),
-        r.included && d.method !== 0 ? h('input', {
-          type: 'range', min: 0, max: pct ? 100 : 10, step: 1, value: r.value, disabled: r.locked, 'aria-label': r.name,
+        r.included && info.sliders ? h('input', {
+          type: 'range', min: 0, max: info.max, step: 1, value: r.value, disabled: r.locked, 'aria-label': r.name,
           oninput: (e) => { setValue(i, Number(e.target.value)); draw(); },
         }) : null)));
       refreshExamples();

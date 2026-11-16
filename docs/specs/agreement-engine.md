@@ -86,7 +86,8 @@ shared by the members' stakes. Replaying the history gives the same amounts.
 
 ## Not yet
 
-Screens: the web app does everything above except deposit deductions and the rule editor's
-other methods (exact amounts, itemized, by room, days, usage). The desktop app edits expenses
-and shows deposits, due items and the schedule, but creates deposits, recurring bills, events
-and schedule changes only from the web app for now. The engine and the hub accept all of it.
+Screens: the rule editor offers equal, percentages, shares, by income, by room, by days present
+and by usage (an expense under a days or usage rule asks for each person's days or reading:
+the hub's preview answers `needs`). Not in the editor yet: exact amounts and itemized (an
+expense's receipt lines). The desktop app creates deposits, recurring bills, events and
+schedule changes only through the web app for now. The engine and the hub accept all of it.

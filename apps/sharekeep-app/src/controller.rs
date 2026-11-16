@@ -15,6 +15,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
+/// One person's days or usage as typed: (member, name, text).
+pub type NeedRow = (MemberId, String, String);
+
 pub struct State {
     pub dir: PathBuf,
     pub cfg: AppConfig,
@@ -31,6 +34,8 @@ pub struct State {
     /// The due items on screen, and the one the expense sheet records.
     pub due: Vec<view::ExpectedRow>,
     pub exp_due: Option<view::ExpectedRow>,
+    /// A rule by days or usage: its kind and each person's value as typed.
+    pub exp_needs: Option<(String, Vec<NeedRow>)>,
     /// The entry the expense sheet edits, and its body as it was.
     pub exp_edit: Option<(u64, sk_ledger::bodies::Expense)>,
     pub pending: usize,
@@ -95,6 +100,7 @@ impl State {
             due: Vec::new(),
             exp_due: None,
             exp_edit: None,
+            exp_needs: None,
             pending: 0,
             refused: Vec::new(),
             problem: None,
@@ -523,6 +529,7 @@ impl State {
         self.exp_payer = Some(self.me());
         self.exp_due = None;
         self.exp_edit = None;
+        self.exp_needs = None;
         ui.set_exp_title(s("New expense"));
         ui.set_exp_amount(s(""));
         ui.set_exp_category(s(""));
@@ -599,6 +606,18 @@ impl State {
             recurring: d.recurring,
             date: d.date_iso,
         });
+        if let Some((kind, values)) = &self.exp_needs {
+            for (m, _, v) in values {
+                let Ok(n) = v.trim().parse::<u64>() else {
+                    continue;
+                };
+                if kind == "days" {
+                    e.days.insert(*m, n.min(366) as u32);
+                } else {
+                    e.usage.insert(*m, n);
+                }
+            }
+        }
         if let Some((_, old)) = &self.exp_edit {
             // an edit keeps what the sheet doesn't show
             e.payer = match (&old.payer, self.exp_payer) {
@@ -616,11 +635,49 @@ impl State {
         Ok(e)
     }
 
-    fn refresh_expense(&self, ui: &AppWindow) {
+    fn refresh_expense(&mut self, ui: &AppWindow) {
         if !ui.get_exp_open() {
             return;
         }
         ui.set_exp_payers(self.chips(self.exp_payer));
+        // ask for days or usage when the category's rule divides by them
+        let needs = self
+            .expense_body(ui)
+            .ok()
+            .and_then(|e| view::needs(&self.ledger, &e));
+        match needs {
+            Some(n) => {
+                let keep = self.exp_needs.as_ref().is_some_and(|(k, _)| *k == n.kind);
+                if !keep {
+                    self.exp_needs = Some((
+                        n.kind.clone(),
+                        n.who
+                            .iter()
+                            .map(|p| (p.id, p.name.clone(), String::new()))
+                            .collect(),
+                    ));
+                }
+                ui.set_exp_needs_title(s(if n.kind == "days" {
+                    format!("{}: days each person was home", n.rule)
+                } else {
+                    format!("{}: each person's usage or meter reading", n.rule)
+                }));
+            }
+            None => self.exp_needs = None,
+        }
+        ui.set_exp_needs(model(
+            self.exp_needs
+                .as_ref()
+                .map(|(_, v)| {
+                    v.iter()
+                        .map(|(_, name, value)| NeedS {
+                            name: s(name),
+                            value: s(value),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ));
         // an edit's own recurring-bill mark would read as "already recorded"
         let r = self
             .expense_body(ui)
@@ -639,6 +696,15 @@ impl State {
                 ui.set_exp_error(s(e));
             }
         }
+    }
+
+    pub fn need_edited(&mut self, ui: &AppWindow, i: i32, text: &str) {
+        if let Some((_, v)) = self.exp_needs.as_mut() {
+            if let Some(row) = v.get_mut(i as usize) {
+                row.2 = text.to_string();
+            }
+        }
+        self.refresh_expense(ui);
     }
 
     pub fn payer_picked(&mut self, ui: &AppWindow, id: i32) {
@@ -767,6 +833,21 @@ impl State {
                 .collect(),
         ));
         ui.set_rule_percent(d.method == 1);
+        ui.set_rule_weighted(view::method_weighted(d.method));
+        ui.set_rule_max(view::method_max(d.method));
+        ui.set_rule_unit(s(match d.method {
+            2 => " share(s)",
+            3 => " part(s)",
+            4 => " (room size)",
+            _ => "",
+        }));
+        ui.set_rule_hint(s(match d.method {
+            3 => "Income as parts, no salaries needed: 64 and 36 split like the incomes.",
+            4 => "Each person's room: its size, or what it would rent for alone.",
+            5 => "Each expense asks how many days each person was home in the period.",
+            6 => "Each expense asks for each person's meter reading or usage count.",
+            _ => "",
+        }));
         ui.set_rule_weights(model(
             d.rows
                 .iter()

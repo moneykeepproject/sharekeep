@@ -409,7 +409,30 @@ pub fn expense_body(
 // ----- the rule editor ---------------------------------------------------------------------------
 
 /// The methods the editor's first version offers (the sliders' meaning per method).
-pub const EDITOR_METHODS: [&str; 4] = ["Equal", "Percentages", "Shares", "By income"];
+pub const EDITOR_METHODS: [&str; 7] = [
+    "Equal",
+    "Percentages",
+    "Shares",
+    "By income",
+    "By room",
+    "By days present",
+    "By usage",
+];
+
+/// Whether an editor method has a slider per member (equal, days and usage don't: days and
+/// usage are entered with each expense).
+pub fn method_weighted(m: usize) -> bool {
+    matches!(m, 1..=4)
+}
+
+/// The slider's top for an editor method.
+pub fn method_max(m: usize) -> f32 {
+    match m {
+        1 => 100.0,
+        4 => 50.0,
+        _ => 10.0,
+    }
+}
 
 /// One member's row in the rule editor.
 #[derive(Debug, Clone, PartialEq)]
@@ -565,6 +588,9 @@ impl RuleDraft {
             1 => Method::Percent(weights(FULL_BP as f32 / 100.0)),
             2 => Method::Shares(weights(1.0)),
             3 => Method::Income(weights(1.0)),
+            4 => Method::Room(weights(1.0)),
+            5 => Method::Days,
+            6 => Method::Usage,
             _ => Method::Equal,
         };
         let mut rule = Rule::new(self.name.trim(), method, &members);
@@ -605,6 +631,24 @@ pub fn examples(
     cur: Currency,
 ) -> Result<Vec<(String, Vec<SplitRow>)>, String> {
     rule.validate().map_err(|e| e.to_string())?;
+    // days and usage are entered with each expense: the examples use sample ones, shown
+    // beside each name
+    let people = rule.participants();
+    let sample_days: BTreeMap<MemberId, u32> = people
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (*m, [30, 20, 10, 25, 15][i % 5]))
+        .collect();
+    let sample_usage: BTreeMap<MemberId, u64> = people
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (*m, [120, 80, 200, 50, 100][i % 5]))
+        .collect();
+    let note = |m: MemberId| match rule.method {
+        Method::Days => format!(" ({} days)", sample_days.get(&m).copied().unwrap_or(0)),
+        Method::Usage => format!(" ({} used)", sample_usage.get(&m).copied().unwrap_or(0)),
+        _ => String::new(),
+    };
     EXAMPLE_AMOUNTS
         .iter()
         .enumerate()
@@ -614,6 +658,8 @@ pub fn examples(
                 &SplitInput {
                     amount: *a,
                     seq: i as u64,
+                    days: sample_days.clone(),
+                    usage: sample_usage.clone(),
                     ..Default::default()
                 },
             )
@@ -623,13 +669,46 @@ pub fn examples(
                 shares
                     .into_iter()
                     .map(|(m, v)| SplitRow {
-                        name: name(l, m),
+                        name: format!("{}{}", name(l, m), note(m)),
                         amount: money(cur, v),
                     })
                     .collect(),
             ))
         })
         .collect()
+}
+
+/// What an expense must also give for the rule its category falls under: per-member days
+/// present or usage, or nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Needs {
+    /// "days" or "usage"
+    pub kind: String,
+    pub rule: String,
+    pub who: Vec<Person>,
+}
+
+pub fn needs(l: &Ledger, e: &Expense) -> Option<Needs> {
+    let g = l.agreements.get(&e.agreement)?;
+    let r = g.rules.resolve(&e.category, e.date, e.rule).ok()?;
+    let kind = match r.rule.method {
+        Method::Days => "days",
+        Method::Usage => "usage",
+        _ => return None,
+    };
+    Some(Needs {
+        kind: kind.into(),
+        rule: r.rule.name.clone(),
+        who: r
+            .rule
+            .participants()
+            .into_iter()
+            .map(|m| Person {
+                id: m,
+                name: name(l, m),
+            })
+            .collect(),
+    })
 }
 
 // ----- everything at once, for the web app ------------------------------------------------------

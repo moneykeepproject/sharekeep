@@ -46,6 +46,8 @@ try:
     admin('POST', f'books/{book}/settings', {'key': 'one_keeper', 'value': 1})
     rec('rule-proposal', {'agreement': 1, 'rule_id': 1, 'effective': first, 'categories': ['Groceries'],
         'rule': {'name': 'Shared', 'method': 'Equal', 'members': [1, 2, 3]}}, member=1)
+    rec('rule-proposal', {'agreement': 1, 'rule_id': 2, 'effective': first, 'categories': ['Heating'],
+        'rule': {'name': 'Heating', 'method': 'Days', 'members': [1, 2, 3]}}, member=1)
     code = admin('POST', 'pairing', {'book_id': book, 'member': 2})
     errors = []
     with sync_playwright() as p:
@@ -139,6 +141,25 @@ try:
         pg.fill('.sheet label:has-text("Amount") input', '100.00')
         pg.click('.sheet button.btn:has-text("Save")')
         pg.wait_for_selector('#page >> text=$400.00')
+        # money kept back from Sam's part
+        pg.click('#page button.link:has-text("More")')
+        pg.click('.sheet button.chip:has-text("Kept back")')
+        pg.fill('.sheet label:has-text("Amount") input', '50.00')
+        pg.click('.sheet button.btn:has-text("Save")')
+        pg.wait_for_selector('#page >> text=$350.00')
+        # a bill divided by days present asks for each person's days
+        pg.click('#tabs >> text=Activity')
+        pg.click('text=+ Expense')
+        pg.fill('.sheet label:has-text("Amount") input', '90.00')
+        pg.fill('.sheet label:has-text("Category") input', 'Heating')
+        pg.wait_for_selector('.sheet >> text=days each person was home')
+        for name, days in [('Jerry', '30'), ('Sam', '30'), ('Alex', '30')]:
+            pg.fill(f'.sheet .card label:has-text("{name}") input', days)
+        pg.wait_for_selector('.sheet .kv >> text=$30.00')
+        pg.screenshot(path=f'{out}/15-days.png')
+        pg.click('.sheet button.btn:has-text("Save")')
+        pg.wait_for_selector('#page >> text=Heating')
+        pg.click('#tabs >> text=Members')
         # a special event and a schedule change
         pg.click('#tabs >> text=Periods')
         pg.click('text=+ Special event')
@@ -158,8 +179,8 @@ try:
         pg.click('.sheet button.chip:has-text("Beach weekend")')
         pg.wait_for_selector('.sheet .kv')
         pg.click('.sheet button.btn:has-text("Save")')
-        pg.wait_for_selector('#page >> text=$90.00')
-        assert pg.locator('#page >> text=Beach weekend').count() >= 1
+        # the edited entry now says it's part of the event
+        pg.wait_for_selector('#page .card >> text=Beach weekend')
         # the wide PC browser
         pg.set_viewport_size({'width': 1200, 'height': 800})
         pg.click('#nav >> text=Home')

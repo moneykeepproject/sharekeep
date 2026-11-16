@@ -718,3 +718,46 @@ fn the_web_app_is_served_and_its_screens_come_from_the_hub() {
         422
     );
 }
+
+#[test]
+fn the_preview_asks_for_days_when_the_rule_divides_by_them() {
+    let h = hub();
+    let (id, _) = household(&h, false, None);
+    admin_record(
+        &h,
+        &id,
+        Some(1),
+        "rule-proposal",
+        json!({
+            "agreement": 1, "rule_id": 2, "effective": "2026-11-01", "categories": ["Heating"],
+            "rule": {"name": "Heating", "method": "Days", "members": [1, 2]},
+        }),
+    );
+    let code = pairing_code(&h, &id, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    let mut e = expense(10000, 2);
+    e["category"] = json!("Heating");
+    let (s, p) = https(
+        &h,
+        "POST",
+        "/api/v1/preview",
+        sam.token(),
+        Some(json!({"expense": e.clone()})),
+    );
+    assert_eq!(s, 200);
+    let p: Value = serde_json::from_slice(&p).unwrap();
+    assert_eq!(p["needs"]["kind"], "days");
+    assert_eq!(p["needs"]["who"].as_array().unwrap().len(), 2);
+    assert!(p["error"].is_string());
+    e["days"] = json!({"1": 30, "2": 10});
+    let (_, p) = https(
+        &h,
+        "POST",
+        "/api/v1/preview",
+        sam.token(),
+        Some(json!({"expense": e})),
+    );
+    let p: Value = serde_json::from_slice(&p).unwrap();
+    assert_eq!(p["rows"][0]["amount"], "$75.00");
+    assert!(p["error"].is_null());
+}

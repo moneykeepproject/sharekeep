@@ -20,6 +20,7 @@ export struct DeviceS { id: int, name: string, detail: string, revoked: bool }
 export struct DueS { name: string, date: string, detail: string, bill: bool, mine: bool, overdue: bool }
 export struct DepositS { label: string, kind: string, balance: string, detail: string }
 export struct RecurringS { id: int, name: string, detail: string, stopped: bool }
+export struct NeedS { name: string, value: string }
 export struct BookS { file: string, name: string, detail: string, encrypted: bool }
 
 // Vertically scrolling page, centred and capped in width for desktops.
@@ -258,6 +259,9 @@ export component AppWindow inherits Window {
     in property <[ChoiceS]> exp-payers;
     in property <[SplitS]> exp-preview;
     in property <string> exp-error;
+    // a rule by days or usage: one field per person
+    in property <string> exp-needs-title;
+    in property <[NeedS]> exp-needs;
 
     // the payment sheet
     in-out property <bool> pay-open;
@@ -273,6 +277,10 @@ export component AppWindow inherits Window {
     in property <[ChoiceS]> rule-methods;
     in property <[WeightS]> rule-weights;
     in property <bool> rule-percent;
+    in property <bool> rule-weighted;
+    in property <float> rule-max: 10;
+    in property <string> rule-unit;
+    in property <string> rule-hint;
     in property <[ExampleS]> rule-examples;
     in property <string> rule-error;
 
@@ -306,6 +314,7 @@ export component AppWindow inherits Window {
     callback sync-now();
     callback add-expense();
     callback expense-changed();
+    callback exp-need-edited(int, string);
     callback payer-picked(int);
     callback save-expense();
     callback add-payment();
@@ -756,6 +765,15 @@ export component AppWindow inherits Window {
         Field { label: "Note (optional)"; text <=> root.exp-note; }
         FieldLabel { text: "Paid by"; }
         ChipStrip { chips: root.exp-payers; picked(id) => { root.payer-picked(id); } }
+        if root.exp-needs.length > 0: Card {
+            SectionTitle { text: root.exp-needs-title; }
+            for n[i] in root.exp-needs: Field {
+                label: n.name;
+                number: true;
+                text: n.value;
+                edited(t) => { root.exp-need-edited(i, t); }
+            }
+        }
         Card {
             SectionTitle { text: "How it divides"; }
             SplitList { rows: root.exp-preview; }
@@ -787,13 +805,14 @@ export component AppWindow inherits Window {
         ChipStrip { chips: root.rule-methods; picked(id) => { root.rule-method-picked(id); } }
         Card {
             SectionTitle { text: root.rule-percent ? "Percentages (always total 100%)" : "Who shares"; }
+            if root.rule-hint != "": Hint { text: root.rule-hint; }
             for w[i] in root.rule-weights: VerticalLayout {
                 spacing: 2px;
                 HorizontalLayout {
                     spacing: 8px;
                     Switch { text: w.name; checked: w.included; toggled => { root.rule-toggle(i); } }
                     Text {
-                        text: !w.included ? "opted out" : root.rule-percent ? round(w.value) + "%" : round(w.value) + (root.rule-methods[0].on ? "" : " share(s)");
+                        text: !w.included ? "opted out" : root.rule-percent ? round(w.value) + "%" : root.rule-weighted ? round(w.value) + root.rule-unit : "";
                         color: Theme.ink;
                         horizontal-alignment: right;
                         vertical-alignment: center;
@@ -801,9 +820,9 @@ export component AppWindow inherits Window {
                     }
                     if root.rule-percent && w.included: LinkButton { text: w.locked ? "Locked" : "Lock"; fg: w.locked ? Theme.amber : Theme.accent; clicked => { root.rule-lock(i); } }
                 }
-                if w.included && !root.rule-methods[0].on: Slider {
+                if w.included && root.rule-weighted: Slider {
                     minimum: 0;
-                    maximum: root.rule-percent ? 100 : 10;
+                    maximum: root.rule-max;
                     value: w.value;
                     enabled: !w.locked;
                     changed(v) => { root.rule-weight(i, v); }
