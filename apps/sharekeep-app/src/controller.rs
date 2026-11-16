@@ -44,6 +44,10 @@ pub struct State {
     pub hub_file: Option<String>,
     /// Keep the message on the Hub tab through the next status (a recovery key).
     keep_info: bool,
+    pub hub_pin_set: bool,
+    /// EZ Start: the people step is done; a step chosen with Back.
+    ez_people_done: bool,
+    ez_manual: Option<i32>,
     seq: u64,
 }
 
@@ -98,6 +102,9 @@ impl State {
             hub_pick: BTreeSet::new(),
             hub_file: None,
             keep_info: false,
+            hub_pin_set: false,
+            ez_people_done: false,
+            ez_manual: None,
             seq: 0,
         }
     }
@@ -144,6 +151,7 @@ impl State {
                 self.found = Some(hub);
                 ui.set_hub_fingerprint(s(fp));
                 ui.set_connect_error(s(""));
+                ui.set_join_step(2);
             }
             Outcome::Found(Err(e)) => {
                 self.found = None;
@@ -177,6 +185,7 @@ impl State {
                 self.offline = sync.offline;
             }
             Outcome::Sent(Ok(m)) | Outcome::Admin(AdminThen::Done(m), Ok(_)) => {
+                self.ez_manual = None;
                 if !m.is_empty() {
                     toast(ui, &m);
                 }
@@ -238,6 +247,7 @@ impl State {
                     .collect();
                 ui.set_hub_books(model(books));
                 ui.set_hub_pin_set(v["pin_set"] == true);
+                self.hub_pin_set = v["pin_set"] == true;
                 if !self.keep_info {
                     ui.set_hub_info(s(format!(
                         "Hub at {} · certificate {}",
@@ -914,6 +924,8 @@ impl State {
                 .collect(),
         ));
         ui.set_hub_pick_count(self.hub_pick.len() as i32);
+        ui.set_ez_people(self.hub_ledger.members.len() as i32);
+        ui.set_ez_step(self.ez_step(ui));
     }
 
     fn admin(&self, method: &'static str, path: String, body: Option<Value>, then: AdminThen) {
@@ -978,6 +990,48 @@ impl State {
             Some(json!({ "password": password })),
             AdminThen::Done("The book is open.".into()),
         );
+    }
+
+    /// EZ Start's step on the hub computer, worked out from where the setup stands (or the
+    /// earlier step chosen with Back).
+    fn ez_step(&self, ui: &AppWindow) -> i32 {
+        let auto = if !self.hub_pin_set {
+            1
+        } else if ui.get_hub_current_name().is_empty() {
+            2
+        } else if self.hub_ledger.agreements.is_empty() && !self.ez_people_done {
+            3
+        } else if self.hub_ledger.agreements.is_empty() {
+            4
+        } else {
+            5
+        };
+        self.ez_manual.map_or(auto, |m| m.min(auto))
+    }
+
+    pub fn ez_back(&mut self, ui: &AppWindow) {
+        let now = self.ez_step(ui);
+        self.ez_manual = Some((now - 1).max(3));
+        if now == 4 {
+            self.ez_people_done = false;
+        }
+        self.refresh_hub(ui);
+    }
+
+    pub fn ez_next(&mut self, ui: &AppWindow) {
+        self.ez_people_done = true;
+        self.ez_manual = None;
+        self.refresh_hub(ui);
+    }
+
+    /// EZ Start is done (or skipped): the full Hub tab from now on.
+    pub fn ez_finish(&mut self, ui: &AppWindow) {
+        self.cfg.ez_done = true;
+        if let Err(e) = self.cfg.save(&self.dir) {
+            toast(ui, &e);
+        }
+        ui.set_hub_code(s(""));
+        ui.set_page(5);
     }
 
     pub fn hub_close_book(&self, ui: &AppWindow) {

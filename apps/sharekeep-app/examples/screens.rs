@@ -95,10 +95,47 @@ fn main() {
     ui.set_hub_address("192.168.1.20".into());
     ui.set_hub_fingerprint("3F2A 91C4 0B7E 55D1 A8F0 6C2B 19E4 D7A3".into());
     ui.set_device_name("Jerry's MacBook".into());
+    ui.set_join_step(2);
+    shot(&win, w, h, &p("01-join-step2"));
+    ui.set_join_step(3);
+    ui.set_connect_code("K7QM-2XRP".into());
     ui.set_connect_error(
         "The pairing code was wrong or has expired. Make a new one on the hub computer.".into(),
     );
-    shot(&win, w, h, &p("01-join-found"));
+    shot(&win, w, h, &p("01-join-step3"));
+    ui.set_connect_error("".into());
+    ui.set_join_step(1);
+
+    // EZ Start on the hub computer, steps 1 to 5
+    ui.set_page(6);
+    let saved = st.hub_ledger.clone();
+    st.hub_ledger = sk_ledger::Ledger::new();
+    st.hub_pin_set = false;
+    ui.set_hub_current_name("".into());
+    st.refresh(&ui);
+    shot(&win, w, h, &p("05-ez1-pin"));
+    st.hub_pin_set = true;
+    st.refresh(&ui);
+    ui.set_new_book_name("Home".into());
+    shot(&win, w, h, &p("05-ez2-book"));
+    ui.set_hub_current_name("Home".into());
+    st.hub_ledger = saved.clone();
+    st.hub_ledger.agreements.clear();
+    st.refresh(&ui);
+    shot(&win, w, h, &p("05-ez3-people"));
+    st.ez_next(&ui);
+    st.hub_member_picked(&ui, 1);
+    st.hub_member_picked(&ui, 2);
+    ui.set_new_agreement_name("Apartment".into());
+    st.refresh(&ui);
+    shot(&win, w, h, &p("05-ez4-agreement"));
+    st.hub_ledger = saved;
+    st.refresh(&ui);
+    ui.set_hub_code("K7QM-2XRP".into());
+    ui.set_hub_code_detail("Works once, for 10 minutes.".into());
+    ui.set_hub_qr(qr_image("http://192.168.1.20:15080/?pair=K7QM2XRP"));
+    shot(&win, w, h, &p("05-ez5-pair"));
+    ui.set_hub_code("".into());
 
     ui.set_page(1);
     shot(&win, w, h, &p("02-home"));

@@ -142,6 +142,57 @@ component Banner inherits Rectangle {
     }
 }
 
+// EZ Start: one step on the screen. Its number, what it's for, and only what this step needs.
+component EzStep inherits VerticalLayout {
+    in property <int> number;
+    in property <int> total;
+    in property <string> title;
+    in property <string> purpose;
+    in property <bool> can-back: number > 1;
+    callback back();
+    spacing: 12px;
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+        for i in root.total: Rectangle {
+            width: i + 1 == root.number ? 28px : 10px;
+            height: 10px;
+            border-radius: 5px;
+            background: i + 1 <= root.number ? Theme.accent : Theme.line;
+        }
+    }
+    Text {
+        text: "Step " + root.number + " of " + root.total;
+        font-size: 14px;
+        font-weight: 600;
+        color: Theme.accent;
+    }
+    Text {
+        text: root.title;
+        font-size: 24px;
+        font-weight: 700;
+        color: Theme.ink;
+        wrap: word-wrap;
+    }
+    Rectangle {
+        background: Theme.accent-soft;
+        border-radius: 10px;
+        height: why.preferred-height + 20px;
+        why := Text {
+            x: 12px;
+            width: parent.width - 24px;
+            text: "Why: " + root.purpose;
+            font-size: 15px;
+            color: Theme.accent-dark;
+            wrap: word-wrap;
+        }
+    }
+    Card {
+        @children
+    }
+    if root.can-back: LinkButton { text: "‹ Back to step " + (root.number - 1); fg: Theme.muted; clicked => { root.back(); } }
+}
+
 component SplitList inherits VerticalLayout {
     in property <[SplitS]> rows;
     spacing: 4px;
@@ -191,6 +242,10 @@ export component AppWindow inherits Window {
     in-out property <string> device-name;
     in property <string> connect-error;
     in property <bool> busy;
+    // EZ Start: the step on screen (joining: 1–3; the hub computer: 1–5)
+    in-out property <int> join-step: 1;
+    in property <int> ez-step: 1;
+    in property <int> ez-people;
 
     // the expense sheet
     in-out property <bool> exp-open;
@@ -275,6 +330,10 @@ export component AppWindow inherits Window {
     callback hub-new-book();
     callback hub-unlock(string);
     callback hub-close-book();
+    callback ez-back();
+    callback ez-next();
+    callback ez-finish();
+    callback ez-open();
     callback hub-add-member();
     callback hub-member-picked(int);
     callback hub-new-agreement();
@@ -292,7 +351,7 @@ export component AppWindow inherits Window {
                 spacing: 8px;
                 if root.page == 2: LinkButton { text: "‹ Back"; fg: white; clicked => { root.page = 1; } }
                 Text {
-                    text: root.page == 2 ? root.agreement-name : root.book-name != "" ? root.book-name : "ShareKeep";
+                    text: root.page == 0 || root.page == 6 ? "EZ Start" : root.page == 2 ? root.agreement-name : root.book-name != "" ? root.book-name : "ShareKeep";
                     color: white;
                     font-size: 19px;
                     font-weight: 700;
@@ -300,7 +359,7 @@ export component AppWindow inherits Window {
                     horizontal-stretch: 1;
                     overflow: elide;
                 }
-                if root.page != 0: LinkButton { text: root.busy ? "Syncing…" : "Sync"; fg: white; clicked => { root.sync-now(); } }
+                if root.page != 0 && root.page != 6: LinkButton { text: root.busy ? "Syncing…" : "Sync"; fg: white; clicked => { root.sync-now(); } }
             }
         }
 
@@ -308,23 +367,99 @@ export component AppWindow inherits Window {
         Rectangle {
             vertical-stretch: 1;
 
-            // 0: join a household hub
+            // 0: join a household hub — EZ Start, one step at a time
             if root.page == 0: Page {
-                SectionTitle { text: "Join your household"; }
-                Hint { text: "One computer in the household runs the ShareKeep hub. On that computer, open ShareKeep > Hub > Pair a device: it shows the hub's address, a pairing code and its QR code."; }
-                Card {
+                if root.join-step == 1: EzStep {
+                    number: 1; total: 3;
+                    title: "Find your household's hub";
+                    purpose: "One computer in the household keeps the books (the hub). This device sends and receives everything through it, over your home Wi-Fi.";
+                    Hint { text: "On the hub computer, open ShareKeep > Hub. Its address is at the top (like 192.168.1.20)."; }
                     Field { label: "Hub address"; placeholder: "192.168.1.20"; text <=> root.hub-address; }
-                    BigButton { text: "Find the hub"; primary: false; enabled: !root.busy; clicked => { root.check-hub(); } }
-                    if root.hub-fingerprint != "": Hint { text: "Certificate fingerprint. It must match the one on the hub computer's screen; if it doesn't, stop: something else is answering at that address."; }
-                    if root.hub-fingerprint != "": Text { text: root.hub-fingerprint; font-size: 15px; font-weight: 700; color: Theme.ink; wrap: word-wrap; }
+                    BigButton { text: root.busy ? "Looking…" : "Find the hub"; enabled: !root.busy && root.hub-address != ""; clicked => { root.check-hub(); } }
+                    if root.connect-error != "": Text { text: root.connect-error; color: Theme.red; wrap: word-wrap; }
                 }
-                if root.hub-fingerprint != "": Card {
+                if root.join-step == 2: EzStep {
+                    number: 2; total: 3;
+                    title: "Check it's really your hub";
+                    purpose: "The fingerprint proves this device is talking to your hub and not something pretending to be it. Everything you send is encrypted for that hub only.";
+                    back => { root.join-step = 1; }
+                    Hint { text: "Compare with the fingerprint on the hub computer's Hub tab:"; }
+                    Text { text: root.hub-fingerprint; font-size: 18px; font-weight: 700; color: Theme.ink; wrap: word-wrap; }
+                    BigButton { text: "They match"; clicked => { root.join-step = 3; } }
+                    BigButton { text: "They don't match"; primary: false; danger: true; clicked => { root.join-step = 1; } }
+                }
+                if root.join-step == 3: EzStep {
+                    number: 3; total: 3;
+                    title: "Pair this device";
+                    purpose: "The pairing code says who this device belongs to; the household PIN proves you're part of the household. You do this once.";
+                    back => { root.join-step = 2; }
+                    Hint { text: "On the hub computer: Hub > Pair a device > tap your name. It shows the code."; }
                     Field { label: "Pairing code"; placeholder: "ABCD-EFGH"; text <=> root.connect-code; }
                     Field { label: "Household PIN"; placeholder: "6 to 12 digits"; secret: true; text <=> root.connect-pin; }
                     Field { label: "Name this device"; placeholder: "Sam's laptop"; text <=> root.device-name; }
-                    BigButton { text: "Pair this device"; enabled: !root.busy; clicked => { root.pair(); } }
+                    BigButton { text: root.busy ? "Pairing…" : "Pair this device"; enabled: !root.busy && root.connect-code != "" && root.connect-pin != "" && root.device-name != ""; clicked => { root.pair(); } }
+                    if root.connect-error != "": Text { text: root.connect-error; color: Theme.red; wrap: word-wrap; }
                 }
-                if root.connect-error != "": Banner { text: root.connect-error; warn: true; }
+            }
+
+            // 6: EZ Start on the hub computer, one step at a time
+            if root.page == 6: Page {
+                if root.hub-error != "": Banner { text: root.hub-error; warn: true; }
+                if root.ez-step == 1: EzStep {
+                    number: 1; total: 5;
+                    title: "Choose the household PIN";
+                    purpose: "Every phone and computer types it once, when it joins. It keeps neighbours on the same Wi-Fi out.";
+                    Field { label: "PIN (6 to 12 digits)"; secret: true; number: true; text <=> root.hub-pin; }
+                    BigButton { text: "Save the PIN"; enabled: root.hub-pin.character-count >= 6 && root.hub-pin.character-count <= 12 && root.hub-pin.is-float(); clicked => { root.hub-set-pin(); } }
+                }
+                if root.ez-step == 2: EzStep {
+                    number: 2; total: 5;
+                    title: "Create the household's book";
+                    purpose: "The book is where all of your household's shared money is recorded. It stays on this computer.";
+                    can-back: false;
+                    Field { label: "Book name"; placeholder: "Home"; text <=> root.new-book-name; }
+                    Switch { text: "Make it a Hyperbook"; checked <=> root.new-book-hyperbook; }
+                    Hint { text: "A Hyperbook keeps every change for good, chained so no one can quietly rewrite the past. You choose now; it can't be changed later."; }
+                    Field { label: "Password (optional: encrypts the book)"; secret: true; text <=> root.new-book-password; }
+                    BigButton { text: "Create the book"; enabled: root.new-book-name != ""; clicked => { root.hub-new-book(); } }
+                }
+                if root.ez-step == 3: EzStep {
+                    number: 3; total: 5;
+                    title: "Add the people";
+                    purpose: "Everyone who shares money in this household: you too. Each person gets their own balance and approves the rules.";
+                    can-back: false;
+                    for m in root.hub-agreement-members: Text { text: "✓ " + m.label; color: Theme.ink; }
+                    Field { label: "Name"; placeholder: "Sam"; text <=> root.new-member-name; }
+                    BigButton { text: "Add this person"; primary: false; enabled: root.new-member-name != ""; clicked => { root.hub-add-member(); } }
+                    BigButton { text: root.ez-people >= 2 ? "That's everyone" : "Add at least two people"; enabled: root.ez-people >= 2; clicked => { root.ez-next(); } }
+                }
+                if root.ez-step == 4: EzStep {
+                    number: 4; total: 5;
+                    title: "Create your first agreement";
+                    purpose: "An agreement is something you share and settle up together (the apartment, a car). It sets who's in and when you settle up: monthly, on the 1st.";
+                    back => { root.ez-back(); }
+                    Field { label: "Agreement name"; placeholder: "Apartment"; text <=> root.new-agreement-name; }
+                    Hint { text: "Who shares in it:"; }
+                    ChipStrip { chips: root.hub-agreement-members; picked(id) => { root.hub-member-picked(id); } }
+                    BigButton { text: "Create the agreement"; enabled: root.new-agreement-name != "" && root.hub-pick-count > 0; clicked => { root.hub-new-agreement(); } }
+                }
+                if root.ez-step == 5: EzStep {
+                    number: 5; total: 5;
+                    title: "Pair the first device";
+                    purpose: "Each person's phone or computer joins once. After that it syncs with this hub on its own whenever it's on the home Wi-Fi.";
+                    back => { root.ez-back(); }
+                    Hint { text: "Tap whose device it is. A phone scans the QR code (it installs the hub's certificate, then joins); a computer runs ShareKeep and types the code."; }
+                    ChipStrip { chips: root.hub-members; picked(id) => { root.hub-make-code(id); } }
+                    if root.hub-code != "": VerticalLayout {
+                        spacing: 8px;
+                        alignment: center;
+                        Image { source: root.hub-qr; width: 200px; height: 200px; image-rendering: pixelated; horizontal-alignment: center; }
+                        Text { text: root.hub-code; font-size: 28px; font-weight: 700; color: Theme.ink; horizontal-alignment: center; }
+                        Hint { text: root.hub-code-detail; horizontal-alignment: center; }
+                    }
+                    BigButton { text: "Finish"; clicked => { root.ez-finish(); } }
+                }
+                LinkButton { text: "Skip EZ Start: show everything on the Hub tab"; fg: Theme.muted; clicked => { root.ez-finish(); } }
             }
 
             // 1: home
@@ -512,6 +647,7 @@ export component AppWindow inherits Window {
             // another.
             if root.page == 5: Page {
                 if root.hub-error != "": Banner { text: root.hub-error; warn: true; }
+                LinkButton { text: "EZ Start: set up step by step"; clicked => { root.ez-open(); } }
                 if root.hub-info != "": Banner { text: root.hub-info; }
                 Card {
                     stripe: root.hub-current-name != "" ? Theme.accent : Theme.line;
@@ -586,7 +722,8 @@ export component AppWindow inherits Window {
         }
 
         // ----- bottom tabs -----
-        if root.page != 0: Rectangle {
+        // EZ Start shows only its step: no tabs
+        if root.page != 0 && root.page != 6: Rectangle {
             height: 60px;
             background: Theme.card;
             drop-shadow-blur: 8px;
@@ -594,7 +731,7 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 NavTab { icon: "⌂"; label: "Home"; active: root.page == 1 || root.page == 2; clicked => { root.page = 1; } }
                 NavTab { icon: "✓"; label: "Approvals"; active: root.page == 3; badge: root.approvals.length; clicked => { root.page = 3; } }
-                if root.is-hub: NavTab { icon: "⌘"; label: "Hub"; active: root.page == 5; clicked => { root.page = 5; } }
+                if root.is-hub: NavTab { icon: "⌘"; label: "Hub"; active: root.page == 5 || root.page == 6; clicked => { root.page = 5; } }
                 NavTab { icon: "⚙"; label: "Settings"; active: root.page == 4; badge: root.refused.length; clicked => { root.page = 4; } }
             }
         }

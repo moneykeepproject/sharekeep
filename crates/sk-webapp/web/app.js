@@ -230,7 +230,7 @@ function render() {
   const paired = !!S.token;
   const ag = agreementView();
   const inAgreement = paired && S.page === 'agreement' && ag;
-  $('#title').textContent = inAgreement ? ag.name : (S.book && S.book.name) || 'ShareKeep';
+  $('#title').textContent = !paired ? 'EZ Start' : inAgreement ? ag.name : (S.book && S.book.name) || 'ShareKeep';
   $('#back').hidden = !inAgreement;
   $('#sync').hidden = !paired;
   $('#sync').textContent = S.busy ? 'Syncing…' : 'Sync';
@@ -271,27 +271,60 @@ function status() {
   return out;
 }
 
+// EZ Start for joining: one numbered step on the screen at a time, each saying what it's for.
+const JOIN_STEPS = [
+  {
+    title: 'Enter the pairing code',
+    why: 'The code says who this device belongs to. It comes from the hub computer: ShareKeep > Hub > Pair a device > your name.',
+    label: 'Pairing code', key: 'code', attrs: { placeholder: 'ABCD-EFGH', autocapitalize: 'characters' },
+    check: (v) => (/^[A-Za-z0-9]{8}$/.test(v.replace(/[-\s]/g, '')) ? '' : 'The code is 8 letters and numbers, like ABCD-EFGH.'),
+  },
+  {
+    title: 'Enter the household PIN',
+    why: 'It proves you are part of the household, so neighbours on the same Wi-Fi can\'t join. You type it only this once.',
+    label: 'Household PIN', key: 'pin', attrs: { type: 'password', inputmode: 'numeric', placeholder: '6 to 12 digits' },
+    check: (v) => (/^\d{6,12}$/.test(v) ? '' : 'The PIN is 6 to 12 digits.'),
+  },
+  {
+    title: 'Name this device',
+    why: 'The household sees which device added what, and the hub computer can remove a lost phone by its name.',
+    label: 'Device name', key: 'device', attrs: { placeholder: "Sam's phone" },
+    check: (v) => (v.trim() ? '' : "Name this device, like Sam's phone."),
+  },
+];
+
 function joinPage() {
-  let code = S.pairCode || '';
-  let pin = '';
-  let device = S.device || defaultDeviceName();
+  S.join = S.join || { code: S.pairCode || '', pin: '', device: S.device || defaultDeviceName() };
+  if (S.pairCode && !S.join.code) S.join.code = S.pairCode;
+  // a code from the QR code skips step 1
+  if (!S.joinStep) S.joinStep = S.join.code ? 2 : 1;
+  const n = S.joinStep;
+  const step = JOIN_STEPS[n - 1];
+  const err = h('p', { class: 'error' });
+  const go = (e) => {
+    const why = step.check(S.join[step.key]);
+    if (why) { err.textContent = why; return; }
+    if (n < JOIN_STEPS.length) { S.joinStep = n + 1; render(); return; }
+    e.target.disabled = true;
+    pair(S.join.code, S.join.pin, S.join.device.trim()).finally(() => { e.target.disabled = false; });
+  };
+  const input = h('input', Object.assign({
+    value: S.join[step.key],
+    oninput: (e) => { S.join[step.key] = e.target.value; err.textContent = ''; },
+    onkeydown: (e) => { if (e.key === 'Enter') go(e); },
+  }, step.attrs));
+  setTimeout(() => input.focus(), 0);
   return [
-    h('h2', {}, 'Join your household'),
-    h('p', { class: 'hint' }, S.pairCode
-      ? 'Almost there. Type the household PIN and a name for this device.'
-      : 'On the hub computer, open ShareKeep > Hub > Pair a device and scan its QR code with this phone, or type the code here.'),
+    h('div', { class: 'dots' }, JOIN_STEPS.map((_, i) => h('span', { class: i + 1 === n ? 'now' : i + 1 < n ? 'done' : '' }))),
+    h('div', { class: 'stepno' }, 'Step ' + n + ' of ' + JOIN_STEPS.length),
+    h('h2', { class: 'steptitle' }, step.title),
+    h('div', { class: 'why' }, 'Why: ' + step.why),
     h('div', { class: 'card' },
-      S.pairCode ? h('div', {}, h('div', { class: 'hint' }, 'Pairing code'), h('div', { class: 'code' }, S.pairCode.slice(0, 4) + '-' + S.pairCode.slice(4)))
-        : field('Pairing code', '', (v) => { code = v; }, { placeholder: 'ABCD-EFGH', autocapitalize: 'characters' }),
-      field('Household PIN', '', (v) => { pin = v; }, { type: 'password', inputmode: 'numeric', placeholder: '6 to 12 digits' }),
-      field('Name this device', device, (v) => { device = v; }, { placeholder: "Sam's phone" }),
-      h('button', { class: 'btn', onclick: (e) => {
-        if (!code.replace(/[-\s]/g, '').match(/^[A-Za-z0-9]{8}$/)) return toast('Type the 8-letter pairing code.');
-        if (!pin.match(/^\d{6,12}$/)) return toast('Type the household PIN: 6 to 12 digits.');
-        if (!device.trim()) return toast("Name this device, like Sam's phone.");
-        e.target.disabled = true;
-        pair(code, pin, device.trim()).finally(() => { e.target.disabled = false; });
-      } }, 'Pair this device')),
+      n === 1 || !S.join.code ? null : h('p', { class: 'hint' }, 'Pairing code ' + S.join.code.replace(/[-\s]/g, '').toUpperCase().replace(/^(.{4})/, '$1-')),
+      h('label', { class: 'field' }, step.label, input),
+      err,
+      h('button', { class: 'btn', onclick: go }, n < JOIN_STEPS.length ? 'Next' : 'Join the household')),
+    n > 1 ? h('button', { class: 'link', onclick: () => { S.joinStep = n - 1; render(); } }, '‹ Back to step ' + (n - 1)) : null,
   ];
 }
 

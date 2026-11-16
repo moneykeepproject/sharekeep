@@ -77,3 +77,11 @@ input[type=range] { width: 100%; accent-color: var(--accent); min-height: 32px; 
 @media (min-width: 900px) { main { padding-top: 20px; } }
 .row.end { justify-content: flex-end; }
 .contents { display: contents; }
+/* EZ Start */
+.dots { display: flex; gap: 6px; }
+.dots span { width: 10px; height: 10px; border-radius: 5px; background: var(--line); }
+.dots span.done { background: var(--accent); }
+.dots span.now { width: 28px; background: var(--accent); }
+.stepno { color: var(--accent); font-weight: 600; font-size: 14px; }
+h2.steptitle { font-size: 24px; }
+.why { background: var(--accent-soft); color: var(--accent-dark); border-radius: 10px; padding: 10px 12px; }

@@ -28,6 +28,9 @@ pub struct AppConfig {
     /// On the hub computer: the hub's data folder (its admin token is read from there).
     #[serde(default)]
     pub hub_data: Option<PathBuf>,
+    /// The hub computer finished (or skipped) EZ Start.
+    #[serde(default)]
+    pub ez_done: bool,
 }
 
 impl AppConfig {

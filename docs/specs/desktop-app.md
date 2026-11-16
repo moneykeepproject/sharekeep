@@ -66,3 +66,18 @@ The pairing QR code opens the certificate page (`http://<address>:15080/?pair=<c
 step 2 links to `https://<address>:15443/#pair=<code>` and shows the code for typing into the
 desktop app. (Before, the QR code went straight to port 15443, which a phone can't open until
 the certificate is installed.)
+
+## EZ Start
+
+Setup shows only the immediate step: its number ("Step 2 of 5", with progress dots), a title,
+a **Why:** box saying what the step is for, and only that step's fields and one main button.
+No tabs or other screens while it runs; Back where going back makes sense.
+
+- **Joining** (a device that isn't paired; desktop and web app): 1 Find your household's hub
+  (address), 2 Check it's really your hub (fingerprint: "They match" / "They don't match"),
+  3 Pair this device (code, PIN, name). The web app's steps are 1 pairing code, 2 household
+  PIN, 3 device name; a code that came with the QR code's link skips step 1.
+- **The hub computer** (until finished or skipped; `ez_done` in the settings; reopened from the
+  Hub tab): 1 Choose the household PIN, 2 Create the household's book, 3 Add the people (at
+  least two), 4 Create your first agreement, 5 Pair the first device. The step follows where
+  setup stands (a step already done is skipped), so EZ Start resumes where it was left.

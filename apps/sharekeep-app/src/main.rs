@@ -80,7 +80,10 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let paired = cfg.paired();
     let state = State::new(dir, cfg, jobs, is_hub);
-    ui.set_page(if paired {
+    // the hub computer starts with EZ Start until it's finished or skipped
+    ui.set_page(if is_hub && !state.cfg.ez_done {
+        6
+    } else if paired {
         1
     } else if is_hub {
         5
@@ -188,6 +191,13 @@ fn wire(ui: &AppWindow) {
         .hub_unlock(u, &file));
     on!(on_hub_add_member, |st, u| st.hub_add_member(u));
     on!(on_hub_close_book, |st, u| st.hub_close_book(u));
+    on!(on_ez_back, |st, u| st.ez_back(u));
+    on!(on_ez_next, |st, u| st.ez_next(u));
+    on!(on_ez_finish, |st, u| st.ez_finish(u));
+    on!(on_ez_open, |st, u| {
+        u.set_page(6);
+        st.refresh(u)
+    });
     on!(on_hub_member_picked, |st, u, id: i32| st
         .hub_member_picked(u, id));
     on!(on_hub_new_agreement, |st, u| st.hub_new_agreement(u));
