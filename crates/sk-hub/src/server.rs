@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sk_chain::Author;
 use sk_client::api::{BookFacts, MeAnswer, PairAnswer, PairRequest, SubmitRequest};
-use sk_core::Currency;
+use sk_core::{Currency, MemberId, NaiveDate};
 use sk_ledger::Ledger;
 use sk_store::crypt::KdfParams;
 use sk_store::{BookInfo, BookKind, Encryption, NewBook, Secret, Store, StoreError};
@@ -704,6 +704,7 @@ fn handle_device(shared: &Shared, mut req: Request) {
             200,
             &json!({"app": "sharekeep-hub", "version": env!("CARGO_PKG_VERSION")}),
         ),
+        ("GET", p) if !p.starts_with("/api/") => serve_webapp(shared, req, p),
         ("POST", "/api/v1/pair") => {
             let r: Result<PairRequest, String> = read_json(&mut req);
             match r {
@@ -743,8 +744,92 @@ fn handle_device(shared: &Shared, mut req: Request) {
     }
 }
 
+/// The web app's files (phones and PC browsers).
+fn serve_webapp(shared: &Shared, req: Request, path: &str) {
+    let Some(a) = sk_webapp::asset(path) else {
+        return fail(shared, req, 404, "No such page.");
+    };
+    let mut resp = Response::from_data(a.body.to_vec()).with_status_code(200);
+    let mut headers = vec![("Content-Type", a.content_type), ("Connection", "close")];
+    headers.extend(sk_webapp::HEADERS);
+    for (k, v) in headers {
+        if let Some(h) = header(k, v) {
+            resp.add_header(h);
+        }
+    }
+    let _ = req.respond(resp);
+    (shared.log)(&format!("GET {path} 200"));
+}
+
+/// The device's book state, its currency, and today (the hub's day), for the web app's views.
+fn device_view<T>(
+    shared: &Shared,
+    d: &Device,
+    f: impl FnOnce(&Ledger, Currency, NaiveDate) -> T,
+) -> Result<T, (u16, String)> {
+    let today = sk_ledger::day_of(shared.now());
+    let mut st = shared.lock();
+    let book = open_book(&mut st, &d.book_id).map_err(|(s, m)| (s, m.to_string()))?;
+    let cur = book
+        .info()
+        .map(|i| i.currency)
+        .ok_or((423, "This book is locked.".to_string()))?;
+    Ok(f(&book.ledger, cur, today))
+}
+
+#[derive(Deserialize)]
+struct PreviewRequest {
+    expense: sk_ledger::bodies::Expense,
+}
+
+#[derive(Deserialize)]
+struct ExamplesRequest {
+    rule: sk_split::method::Rule,
+}
+
 fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url: &str, d: &Device) {
+    let me = MemberId(d.member);
     match (method, path) {
+        ("GET", "/api/v1/view") => {
+            match device_view(shared, d, |l, cur, today| {
+                json!(sk_view::view::snapshot(l, me, cur, today))
+            }) {
+                Ok(v) => send(shared, req, 200, &v),
+                Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
+        ("POST", "/api/v1/preview") => {
+            let b: PreviewRequest = match read_json(&mut req) {
+                Ok(b) => b,
+                Err(e) => return fail(shared, req, 400, &e),
+            };
+            match device_view(shared, d, |l, cur, _| {
+                sk_view::view::preview(l, me, cur, b.expense)
+            }) {
+                Ok(Ok(rows)) => send(shared, req, 200, &json!({ "rows": rows })),
+                Ok(Err(why)) => fail(shared, req, 422, &why),
+                Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
+        ("POST", "/api/v1/examples") => {
+            let b: ExamplesRequest = match read_json(&mut req) {
+                Ok(b) => b,
+                Err(e) => return fail(shared, req, 400, &e),
+            };
+            match device_view(shared, d, |l, cur, _| {
+                sk_view::view::examples(&b.rule, l, cur)
+            }) {
+                Ok(Ok(ex)) => {
+                    let ex: Vec<Value> = ex
+                        .into_iter()
+                        .map(|(amount, rows)| json!({"amount": amount, "rows": rows}))
+                        .collect();
+                    send(shared, req, 200, &json!({ "examples": ex }))
+                }
+                Ok(Err(why)) => fail(shared, req, 422, &why),
+                Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
         ("GET", "/api/v1/me") => {
             let mut st = shared.lock();
             let book = match book_by_id(&mut st, &d.book_id) {

@@ -1,6 +1,5 @@
-//! ShareKeep's screens (Slint) and their view models ([`view`]).
+//! ShareKeep's screens (Slint). The view models that fill them are in `sk-view`.
 
-pub mod demo;
-pub mod view;
+pub use sk_view::{demo, view};
 
 slint::include_modules!();

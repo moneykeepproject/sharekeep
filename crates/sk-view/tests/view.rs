@@ -1,7 +1,7 @@
 //! The screens' view models, on the sample household.
 
 use sk_core::{AgreementId, Currency, MemberId, NaiveDate};
-use sk_ui::view::{self, RuleDraft};
+use sk_view::view::{self, RuleDraft};
 
 const A: AgreementId = AgreementId(1);
 const JERRY: MemberId = MemberId(1);
@@ -19,13 +19,13 @@ fn usd() -> Currency {
 
 #[test]
 fn the_sample_household_replays_cleanly() {
-    let (_, skipped) = sk_ledger::Ledger::replay(&sk_ui::demo::records(today()));
+    let (_, skipped) = sk_ledger::Ledger::replay(&sk_view::demo::records(today()));
     assert!(skipped.is_empty(), "{skipped:?}");
 }
 
 #[test]
 fn home_shows_where_i_stand_in_each_agreement() {
-    let l = sk_ui::demo::ledger(today());
+    let l = sk_view::demo::ledger(today());
     let cards = view::agreements(&l, JERRY, usd(), today());
     assert_eq!(cards.len(), 1);
     let c = &cards[0];
@@ -41,7 +41,7 @@ fn home_shows_where_i_stand_in_each_agreement() {
 
 #[test]
 fn activity_is_newest_first_and_marks_disputes() {
-    let l = sk_ui::demo::ledger(today());
+    let l = sk_view::demo::ledger(today());
     let rows = view::activity(&l, A, JERRY, usd());
     assert_eq!(rows[0].title, "Payment");
     assert_eq!(rows[0].detail, "Sam paid Jerry");
@@ -54,7 +54,7 @@ fn activity_is_newest_first_and_marks_disputes() {
 
 #[test]
 fn rules_members_periods_and_approvals() {
-    let l = sk_ui::demo::ledger(today());
+    let l = sk_view::demo::ledger(today());
     let rules = view::rules(&l, A, today());
     assert_eq!(rules.len(), 2, "the waiting proposal isn't in force");
     assert!(rules
@@ -78,7 +78,7 @@ fn rules_members_periods_and_approvals() {
 
 #[test]
 fn the_expense_preview_divides_by_the_categorys_rule() {
-    let l = sk_ui::demo::ledger(today());
+    let l = sk_view::demo::ledger(today());
     let e = view::expense_body(A, today(), 10000, JERRY, "Rent", "");
     let rows = view::preview(&l, JERRY, usd(), e).unwrap();
     let amounts: Vec<&str> = rows.iter().map(|r| r.amount.as_str()).collect();
@@ -95,7 +95,7 @@ fn the_expense_preview_divides_by_the_categorys_rule() {
 
 #[test]
 fn percentage_sliders_always_total_one_hundred() {
-    let l = sk_ui::demo::ledger(today());
+    let l = sk_view::demo::ledger(today());
     let mut d = RuleDraft::new(&l, A);
     d.set_method(1);
     let total = |d: &RuleDraft| d.rows.iter().map(|r| r.value).sum::<f32>();
@@ -126,7 +126,7 @@ fn percentage_sliders_always_total_one_hundred() {
 
 #[test]
 fn the_rule_editor_shows_live_examples_and_makes_a_proposal() {
-    let l = sk_ui::demo::ledger(today());
+    let l = sk_view::demo::ledger(today());
     let mut d = RuleDraft::new(&l, A);
     d.name = "Internet".into();
     let ex = view::examples(&d.rule(), &l, usd()).unwrap();
@@ -152,4 +152,23 @@ fn the_rule_editor_shows_live_examples_and_makes_a_proposal() {
         d.toggle_included(i);
     }
     assert!(view::examples(&d.rule(), &l, usd()).is_err());
+}
+
+#[test]
+fn the_web_apps_snapshot_has_every_screen() {
+    let l = sk_view::demo::ledger(today());
+    let s = view::snapshot(&l, JERRY, usd(), today());
+    assert_eq!(s.me_name, "Jerry");
+    assert_eq!(s.cards.len(), 1);
+    assert_eq!(s.approvals.len(), 1);
+    let a = &s.agreements[0];
+    assert_eq!(a.people.len(), 3);
+    assert_eq!(a.next_rule, sk_core::RuleId(4));
+    assert_eq!(a.next_period.to_string(), "2027-04-01");
+    assert!(a.i_owe.is_none(), "Jerry is owed");
+    let sam = view::snapshot(&l, MemberId(2), usd(), today());
+    assert_eq!(sam.agreements[0].i_owe.unwrap().0, JERRY);
+    let v = serde_json::to_value(&s).unwrap();
+    assert_eq!(v["agreements"][0]["people"][0]["name"], "Jerry");
+    assert_eq!(v["today"], "2027-03-14");
 }

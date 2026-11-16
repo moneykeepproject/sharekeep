@@ -4600,7 +4600,10 @@ dependencies = [
  "sk-core",
  "sk-ledger",
  "sk-report",
+ "sk-split",
  "sk-store",
+ "sk-view",
+ "sk-webapp",
  "tempfile",
  "time",
  "tiny_http",
@@ -4660,15 +4663,27 @@ dependencies = [
 name = "sk-ui"
 version = "0.1.0"
 dependencies = [
+ "sk-view",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "sk-view"
+version = "0.1.0"
+dependencies = [
  "chrono",
+ "serde",
  "serde_json",
  "sk-chain",
  "sk-core",
  "sk-ledger",
  "sk-split",
- "slint",
- "slint-build",
 ]
+
+[[package]]
+name = "sk-webapp"
+version = "0.1.0"
 
 [[package]]
 name = "skia-bindings"

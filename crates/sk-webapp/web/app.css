@@ -1,0 +1,79 @@
+/* ShareKeep's web app: the Capture look (soft background, white cards, teal accent), one
+   column, 48px tap targets. Same colours as the desktop app's Theme. */
+:root {
+  --accent: #0f766e; --accent-dark: #115e59; --accent-soft: #dcf2ef;
+  --bg: #f1f5f4; --card: #ffffff; --ink: #1e293b; --muted: #64748b; --line: #e2e8f0;
+  --amber: #92400e; --amber-soft: #fef3c7; --amber-line: #f59e0b;
+  --red: #b91c1c; --red-soft: #fee2e2; --green: #15803d;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+}
+button, input, select { font: inherit; color: inherit; }
+header {
+  position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 8px;
+  min-height: 56px; padding: env(safe-area-inset-top) 8px 0 16px; background: var(--accent); color: #fff;
+}
+header h1 { flex: 1; margin: 0; font-size: 19px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+main { max-width: 640px; margin: 0 auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.card { background: var(--card); border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 2px #0f172a12;
+  display: flex; flex-direction: column; gap: 8px; border-left: 4px solid transparent; }
+.card.click { cursor: pointer; }
+.card.owed { border-left-color: var(--green); } .card.owes { border-left-color: var(--red); }
+.card.warn { border-left-color: var(--amber-line); } .card.info { border-left-color: var(--accent); }
+h2 { margin: 0; font-size: 18px; }
+.row { display: flex; align-items: center; gap: 8px; }
+.row > .grow { flex: 1; min-width: 0; }
+.kv { display: flex; justify-content: space-between; gap: 8px; }
+.kv .v { font-weight: 600; text-align: right; }
+.hint { color: var(--muted); font-size: 13px; margin: 0; }
+.big { font-size: 17px; font-weight: 700; }
+.pos { color: var(--green); } .neg { color: var(--red); } .zero { color: var(--muted); }
+.banner { border-radius: 10px; padding: 8px 12px; background: var(--accent-soft); color: var(--accent-dark); border: 1px solid var(--accent); }
+.banner.warn { background: var(--amber-soft); color: var(--amber); border-color: var(--amber-line); }
+.error { color: var(--red); margin: 0; }
+.badge-pill { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 8px; background: var(--accent-soft); color: var(--accent-dark); }
+.badge-pill.warn { background: var(--amber-soft); color: var(--amber); }
+.btn { min-height: 48px; border-radius: 10px; border: 2px solid var(--accent); background: var(--accent); color: #fff;
+  font-weight: 600; padding: 0 16px; cursor: pointer; flex: 1; }
+.btn.secondary { background: transparent; color: var(--accent); }
+.btn.danger { background: transparent; color: var(--red); border-color: var(--red); }
+.btn:disabled { opacity: .45; cursor: default; }
+.link { background: none; border: 0; color: var(--accent); font-weight: 600; min-height: 44px; padding: 0 8px; cursor: pointer; }
+.link.light { color: #fff; } .link.red { color: var(--red); } .link.amber { color: var(--amber); }
+label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+input[type=text], input[type=password], input[type=date], input[type=number], input:not([type]) {
+  min-height: 44px; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; background: #f8fafc; color: var(--ink); font-weight: 400; font-size: 16px; }
+input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+.chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0; }
+nav#tabs { position: sticky; top: 56px; z-index: 4; background: var(--card); padding: 8px 12px; justify-content: center; }
+.chip { min-height: 40px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); padding: 0 14px; cursor: pointer; white-space: nowrap; }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip.on::before { content: "✓ "; }
+nav#nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: var(--card); box-shadow: 0 -2px 8px #0f172a1a;
+  padding-bottom: env(safe-area-inset-bottom); z-index: 5; }
+nav#nav { justify-content: center; }
+nav#nav button { flex: 1; max-width: 220px; min-height: 60px; border: 0; background: none; color: var(--muted); font-size: 12px; position: relative; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; }
+nav#nav button.on { color: var(--accent); font-weight: 700; box-shadow: inset 0 3px 0 var(--accent); }
+nav#nav .ico { font-size: 20px; line-height: 1.1; }
+nav#nav .badge { position: absolute; top: 6px; left: calc(50% + 6px); background: #f59e0b; color: #fff; border-radius: 999px; font-size: 11px; min-width: 18px; padding: 0 5px; }
+.scrim { position: fixed; inset: 0; background: #0f172a80; z-index: 10; display: flex; align-items: flex-end; justify-content: center; }
+.sheet { background: var(--bg); width: min(100%, 640px); max-height: calc(100% - 40px); overflow-y: auto; border-radius: 18px 18px 0 0;
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 12px; }
+.sheet .head { display: flex; align-items: center; } .sheet .head h2 { flex: 1; font-size: 20px; }
+.slider { display: flex; flex-direction: column; gap: 2px; }
+input[type=range] { width: 100%; accent-color: var(--accent); min-height: 32px; }
+.switch { display: flex; align-items: center; gap: 8px; min-height: 40px; cursor: pointer; }
+.switch input { width: 22px; height: 22px; accent-color: var(--accent); }
+#toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 84px; z-index: 20; background: #1e293bee; color: #fff;
+  border-radius: 10px; padding: 10px 14px; max-width: min(480px, calc(100% - 32px)); }
+.code { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+@media (min-width: 900px) { main { padding-top: 20px; } }
+.row.end { justify-content: flex-end; }
+.contents { display: contents; }

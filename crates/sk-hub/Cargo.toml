@@ -12,11 +12,14 @@ name = "sharekeep-hub"
 path = "src/main.rs"
 
 [dependencies]
+sk-view.workspace = true
+sk-webapp.workspace = true
 sk-core.workspace = true
 sk-chain.workspace = true
 sk-store.workspace = true
 sk-client.workspace = true
 sk-ledger.workspace = true
+sk-split.workspace = true
 sk-report.workspace = true
 serde.workspace = true
 serde_json.workspace = true

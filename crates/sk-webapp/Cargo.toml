@@ -1,0 +1,10 @@
+[package]
+name = "sk-webapp"
+description = "ShareKeep's web app for phones and PC browsers (a PWA served by the hub over HTTPS): the files, built into the hub"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

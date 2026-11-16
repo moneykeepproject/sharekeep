@@ -625,8 +625,8 @@ pub fn install_page(info: &Info, apple_first: bool, pair: Option<&str>) -> Strin
 <meta name="color-scheme" content="light dark">
 <title>ShareKeep hub — certificate</title>
 <style>
-:root {{ --bg:#f6f7f9; --card:#ffffff; --text:#1b1f24; --muted:#56606b; --accent:#1f5fbf; --line:#d8dde3; }}
-@media (prefers-color-scheme: dark) {{ :root {{ --bg:#15181c; --card:#20252b; --text:#eef1f4; --muted:#aab3bd; --accent:#7fb0ff; --line:#3a424b; }} }}
+:root {{ --bg:#f1f5f4; --card:#ffffff; --text:#1e293b; --muted:#64748b; --accent:#0f766e; --line:#e2e8f0; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg:#15181c; --card:#20252b; --text:#eef1f4; --muted:#aab3bd; --accent:#5eead4; --line:#3a424b; }} }}
 body {{ margin:0; background:var(--bg); color:var(--text); font:17px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }}
 main {{ max-width:480px; margin:0 auto; padding:16px; }}
 h1 {{ font-size:22px; margin:8px 0 4px; }} h2 {{ font-size:18px; margin:20px 0 6px; }}

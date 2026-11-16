@@ -3,9 +3,9 @@
 Keep a household's shared money: partners, roommates, or a parent and an adult child
 sharing a home. Part of the MoneyKeep family (Rust + Slint).
 
-**Status: in development.** Milestones 1–4b: the split engine, the Hyperbook chain, the book
-files, the household service and its client, the agreement engine and statement PDFs, and the
-desktop app for Windows and macOS. Not yet: the web app for phones, installers, releases.
+**Status: in development.** Milestones 1–4c: the split engine, the Hyperbook chain, the book
+files, the household service and its client, the agreement engine and statement PDFs, the
+desktop app for Windows and macOS, and the web app for phones and PC browsers.
 
 ## Build & test
 
@@ -41,7 +41,9 @@ code. Other computers run `sharekeep` and type the hub's address, the code and t
 | `crates/sk-report/` | Statement PDFs. |
 | `crates/sk-hub/` | The household service (`sharekeep-hub`): HTTPS on the home Wi-Fi with its own certificate authority, pairing (code + PIN), devices, records. |
 | `crates/sk-client/` | The desktop app's side: HTTPS to the hub, the offline outbox, the checked local copy of a book's history. |
-| `crates/sk-ui/` | The screens (Slint, the Capture look) and their view models; a sample household. |
+| `crates/sk-view/` | What every screen shows, worked out from a book's state; a sample household. |
+| `crates/sk-ui/` | The desktop app's screens (Slint, the Capture look). |
+| `crates/sk-webapp/` | The web app for phones and PC browsers (HTML, CSS, JavaScript), built into the hub. |
 | `apps/sharekeep-app/` | The desktop app (`sharekeep`) for Windows and macOS: a background worker for the hub, file dialogs, settings. |
 | `xtask/` | `cargo xtask ci`, `workflows`, `guards`. |
 | `docs/specs/` | What the implemented parts must do. |
@@ -55,7 +57,7 @@ code. Other computers run `sharekeep` and type the hub's address, the code and t
 | 3 (done) | `sk-hub` (household service, pairing), `sk-client` (API client, outbox) |
 | 4a (done) | `sk-ledger` (agreement engine), `sk-report` (statement PDFs), hub checks and seals |
 | 4b (done) | `sk-ui`, `sharekeep-app` (Windows, macOS) |
-| 4c | `sk-webapp` (phones and PC browsers) |
+| 4c (done) | `sk-view`, `sk-webapp` (phones and PC browsers) |
 | 4d | the hub as a service, OS-sealed keys, installers, release workflow, keep-launcher |
 
 ## Licence

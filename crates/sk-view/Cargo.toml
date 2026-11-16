@@ -1,0 +1,17 @@
+[package]
+name = "sk-view"
+description = "What ShareKeep's screens show, worked out from a book's state: shared by the desktop app (Slint) and the hub's web app (JSON)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sk-core.workspace = true
+sk-split.workspace = true
+sk-ledger.workspace = true
+sk-chain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true

@@ -10,13 +10,8 @@ repository.workspace = true
 # backend-winit is what brings Slint's image decoding (the Fluent style's icons are SVGs); the
 # desktop and web apps use winit anyway.
 [dependencies]
-sk-core.workspace = true
-sk-split.workspace = true
-sk-ledger.workspace = true
-sk-chain.workspace = true
-chrono.workspace = true
+sk-view.workspace = true
 slint = { workspace = true, features = ["backend-winit", "renderer-software"] }
-serde_json.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

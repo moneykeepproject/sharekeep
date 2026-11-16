@@ -1,6 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["crates/sk-core", "crates/sk-split", "crates/sk-chain", "crates/sk-store", "crates/sk-ledger", "crates/sk-report", "crates/sk-hub", "crates/sk-client", "crates/sk-ui", "apps/sharekeep-app", "xtask"]
+members = [
+    "crates/sk-core",
+    "crates/sk-split",
+    "crates/sk-chain",
+    "crates/sk-store",
+    "crates/sk-ledger",
+    "crates/sk-report",
+    "crates/sk-hub",
+    "crates/sk-client",
+    "crates/sk-view",
+    "crates/sk-ui",
+    "crates/sk-webapp",
+    "apps/sharekeep-app",
+    "xtask",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +31,8 @@ sk-split = { path = "crates/sk-split" }
 sk-ledger = { path = "crates/sk-ledger" }
 sk-report = { path = "crates/sk-report" }
 sk-ui = { path = "crates/sk-ui" }
+sk-view = { path = "crates/sk-view" }
+sk-webapp = { path = "crates/sk-webapp" }
 sk-client = { path = "crates/sk-client" }
 sk-hub = { path = "crates/sk-hub" }
 serde = { version = "1", features = ["derive"] }

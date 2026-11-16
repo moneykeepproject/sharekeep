@@ -1,6 +1,7 @@
 //! View models: what each screen shows, worked out from a book's state. Plain Rust (no
 //! window needed), so it is tested on its own and shared by the desktop and web apps.
 
+use serde::Serialize;
 use serde_json::json;
 use sk_core::{AgreementId, Cents, Currency, DateSpan, MemberId, NaiveDate, RuleId};
 use sk_ledger::bodies::{Expense, Payer};
@@ -27,7 +28,7 @@ pub fn sign(v: Cents) -> i32 {
     v.signum() as i32
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MemberBalance {
     pub member: MemberId,
     pub name: String,
@@ -35,7 +36,7 @@ pub struct MemberBalance {
     pub sign: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgreementCard {
     pub id: AgreementId,
     pub name: String,
@@ -103,7 +104,7 @@ pub fn agreements(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> 
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ActivityRow {
     pub seq: u64,
     pub date: String,
@@ -171,7 +172,7 @@ pub fn activity(l: &Ledger, a: AgreementId, me: MemberId, cur: Currency) -> Vec<
     rows
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RuleRow {
     pub id: RuleId,
     pub name: String,
@@ -257,7 +258,7 @@ pub fn members(l: &Ledger, a: AgreementId, cur: Currency) -> (Vec<MemberBalance>
     (list, settle)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PeriodRow {
     pub first: NaiveDate,
     pub label: String,
@@ -309,7 +310,7 @@ pub fn periods(l: &Ledger, a: AgreementId, today: NaiveDate, n: usize) -> Vec<Pe
     out
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApprovalRow {
     pub seq: u64,
     pub title: String,
@@ -344,7 +345,7 @@ pub fn approvals(l: &Ledger, me: MemberId) -> Vec<ApprovalRow> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SplitRow {
     pub name: String,
     pub amount: String,
@@ -618,4 +619,102 @@ pub fn examples(
             ))
         })
         .collect()
+}
+
+// ----- everything at once, for the web app ------------------------------------------------------
+
+/// A person in an agreement, for pickers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Person {
+    pub id: MemberId,
+    pub name: String,
+}
+
+/// One agreement's screens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgreementView {
+    pub id: AgreementId,
+    pub name: String,
+    pub period: String,
+    /// Active members today, for "paid by" and payments.
+    pub people: Vec<Person>,
+    pub activity: Vec<ActivityRow>,
+    pub rules: Vec<RuleRow>,
+    pub members: Vec<MemberBalance>,
+    pub settle: Vec<String>,
+    pub periods: Vec<PeriodRow>,
+    /// The payment that would settle me up, if I owe: (to, amount in cents).
+    pub i_owe: Option<(MemberId, Cents)>,
+    /// The next rule id and when a new rule would start (the next period).
+    pub next_rule: RuleId,
+    pub next_period: NaiveDate,
+}
+
+/// Everything a device's screens show, for `me` on `today`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Snapshot {
+    pub me: MemberId,
+    pub me_name: String,
+    pub today: NaiveDate,
+    pub currency: String,
+    pub cards: Vec<AgreementCard>,
+    pub approvals: Vec<ApprovalRow>,
+    pub agreements: Vec<AgreementView>,
+}
+
+pub fn snapshot(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> Snapshot {
+    let views: Vec<AgreementView> = l
+        .agreements
+        .values()
+        .filter(|a| a.members.contains_key(&me))
+        .map(|a| {
+            let (members, settle) = members(l, a.id, cur);
+            let b = l.balances(a.id);
+            let i_owe = settle_up(&b)
+                .into_iter()
+                .find(|t| t.from == me)
+                .map(|t| (t.to, t.amount));
+            let next_rule = l
+                .proposals
+                .values()
+                .filter_map(|p| match &p.kind {
+                    ProposalKind::Rule(r) if r.agreement == a.id => Some(r.rule_id.0),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+                + 1;
+            let current = a.schedule.period_containing(today);
+            AgreementView {
+                id: a.id,
+                name: a.name.clone(),
+                period: current.as_ref().map(period_text).unwrap_or_default(),
+                people: a
+                    .active_on(today)
+                    .into_iter()
+                    .map(|m| Person {
+                        id: m,
+                        name: name(l, m),
+                    })
+                    .collect(),
+                activity: activity(l, a.id, me, cur),
+                rules: rules(l, a.id, today),
+                members,
+                settle,
+                periods: periods(l, a.id, today, 5),
+                i_owe,
+                next_rule: RuleId(next_rule),
+                next_period: current.and_then(|p| p.last.succ_opt()).unwrap_or(today),
+            }
+        })
+        .collect();
+    Snapshot {
+        me,
+        me_name: name(l, me),
+        today,
+        currency: cur.code().to_string(),
+        cards: agreements(l, me, cur, today),
+        approvals: approvals(l, me),
+        agreements: views,
+    }
 }

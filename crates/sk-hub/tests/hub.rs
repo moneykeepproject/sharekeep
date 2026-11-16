@@ -619,3 +619,102 @@ fn the_pairing_qr_code_opens_the_certificate_page_with_step_two() {
     let page = String::from_utf8(page).unwrap();
     assert!(!page.contains("Step 2") && !page.contains("<script>"));
 }
+
+fn https(
+    h: &Hub,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (u16, Vec<u8>) {
+    let auth = token.map(|t| format!("Bearer {t}"));
+    let mut headers = vec![("Content-Type", "application/json")];
+    if let Some(a) = &auth {
+        headers.push(("Authorization", a));
+    }
+    let bytes = body.map(|b| serde_json::to_vec(&b).unwrap());
+    sk_client::tls::https_call(
+        h.r().https,
+        "127.0.0.1",
+        &h.r().ca_der,
+        method,
+        path,
+        &headers,
+        bytes.as_deref(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn the_web_app_is_served_and_its_screens_come_from_the_hub() {
+    let h = hub();
+    let (id, _) = household(&h, false, None);
+    // the app's files need no pairing
+    let (s, page) = https(&h, "GET", "/", None, None);
+    assert_eq!(s, 200);
+    assert!(String::from_utf8(page).unwrap().contains("/app.js"));
+    assert_eq!(https(&h, "GET", "/app.js", None, None).0, 200);
+    assert_eq!(https(&h, "GET", "/secret.txt", None, None).0, 404);
+    // its data does
+    assert_eq!(https(&h, "GET", "/api/v1/view", None, None).0, 401);
+    let code = pairing_code(&h, &id, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    let t = sam.token();
+    sam.submit("e1", "expense", &expense(9000, 2)).unwrap();
+    let (s, v) = https(&h, "GET", "/api/v1/view", t, None);
+    assert_eq!(s, 200);
+    let v: Value = serde_json::from_slice(&v).unwrap();
+    assert_eq!(v["me_name"], "Sam");
+    assert_eq!(v["cards"][0]["headline"], "You are owed $45.00");
+    assert_eq!(v["agreements"][0]["activity"][0]["amount"], "$90.00");
+    // the live split while typing, and its reason when it can't divide
+    let (s, p) = https(
+        &h,
+        "POST",
+        "/api/v1/preview",
+        t,
+        Some(json!({"expense": expense(1001, 2)})),
+    );
+    assert_eq!(s, 200);
+    let p: Value = serde_json::from_slice(&p).unwrap();
+    assert_eq!(p["rows"].as_array().unwrap().len(), 2);
+    let mut bad = expense(1001, 2);
+    bad["agreement"] = json!(7);
+    assert_eq!(
+        https(
+            &h,
+            "POST",
+            "/api/v1/preview",
+            t,
+            Some(json!({"expense": bad}))
+        )
+        .0,
+        422
+    );
+    // the rule editor's examples
+    let rule =
+        json!({"name": "Rent", "method": {"Percent": {"1": 6000, "2": 4000}}, "members": [1, 2]});
+    let (s, x) = https(
+        &h,
+        "POST",
+        "/api/v1/examples",
+        t,
+        Some(json!({ "rule": rule })),
+    );
+    assert_eq!(s, 200);
+    let x: Value = serde_json::from_slice(&x).unwrap();
+    assert_eq!(x["examples"][1]["rows"][0]["amount"], "$60.00");
+    let wrong =
+        json!({"name": "Rent", "method": {"Percent": {"1": 6000, "2": 3000}}, "members": [1, 2]});
+    assert_eq!(
+        https(
+            &h,
+            "POST",
+            "/api/v1/examples",
+            t,
+            Some(json!({ "rule": wrong }))
+        )
+        .0,
+        422
+    );
+}
