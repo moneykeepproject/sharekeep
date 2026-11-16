@@ -71,7 +71,10 @@ the certificate is installed.)
 
 Setup shows only the immediate step: its number ("Step 2 of 5", with progress dots), a title,
 a **Why:** box saying what the step is for, and only that step's fields and one main button.
-No tabs or other screens while it runs; Back where going back makes sense.
+No tabs or other screens while it runs. Back works from every step after the first; a step
+that's already done shows what was done ("✓ The PIN is set", "✓ Working in Home") with Next
+to keep it, or the way to change it (a new PIN; close the book to create another). Next never
+goes past where setup stands.
 
 - **Joining** (a device that isn't paired; desktop and web app): 1 Find your household's hub
   (address), 2 Check it's really your hub (fingerprint: "They match" / "They don't match"),

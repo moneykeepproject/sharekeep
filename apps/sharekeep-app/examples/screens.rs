@@ -125,6 +125,13 @@ fn main() {
     st.hub_ledger.agreements.clear();
     st.refresh(&ui);
     shot(&win, w, h, &p("05-ez3-people"));
+    // Back from step 3: the book and the PIN show what's done, to keep or change
+    st.ez_back(&ui);
+    shot(&win, w, h, &p("05-ez3b-back-to-book"));
+    st.ez_back(&ui);
+    shot(&win, w, h, &p("05-ez3c-back-to-pin"));
+    st.ez_next(&ui);
+    st.ez_next(&ui);
     st.ez_next(&ui);
     st.hub_member_picked(&ui, 1);
     st.hub_member_picked(&ui, 2);
@@ -132,7 +139,7 @@ fn main() {
     st.refresh(&ui);
     shot(&win, w, h, &p("05-ez4-agreement"));
     st.hub_ledger = saved;
-    st.refresh(&ui);
+    st.ez_next(&ui);
     ui.set_hub_code("K7QM-2XRP".into());
     ui.set_hub_code_detail("Works once, for 10 minutes.".into());
     ui.set_hub_qr(qr_image("http://192.168.1.20:15080/?pair=K7QM2XRP"));

@@ -414,6 +414,7 @@ export component AppWindow inherits Window {
     callback hub-new-book();
     callback hub-unlock(string);
     callback hub-close-book();
+    in property <bool> ez-has-agreement;
     callback ez-back();
     callback ez-next();
     callback ez-finish();
@@ -510,25 +511,33 @@ export component AppWindow inherits Window {
                     number: 1; total: 5;
                     title: "Choose the household PIN";
                     purpose: "Every phone and computer types it once, when it joins. It keeps neighbours on the same Wi-Fi out.";
-                    Field { label: "PIN (6 to 12 digits)"; secret: true; number: true; text <=> root.hub-pin; }
-                    BigButton { text: "Save the PIN"; enabled: root.hub-pin.character-count >= 6 && root.hub-pin.character-count <= 12 && root.hub-pin.is-float(); clicked => { root.hub-set-pin(); } }
+                    if root.hub-pin-set: Text { text: "✓ The PIN is set. Change it here, or go on: devices already paired keep working."; color: Theme.ink; wrap: word-wrap; }
+                    Field { label: root.hub-pin-set ? "New PIN (6 to 12 digits)" : "PIN (6 to 12 digits)"; secret: true; number: true; text <=> root.hub-pin; }
+                    BigButton { text: root.hub-pin-set ? "Change the PIN" : "Save the PIN"; primary: !root.hub-pin-set; enabled: root.hub-pin.character-count >= 6 && root.hub-pin.character-count <= 12 && root.hub-pin.is-float(); clicked => { root.hub-set-pin(); } }
+                    if root.hub-pin-set: BigButton { text: "Next: keep this PIN"; clicked => { root.ez-next(); } }
                 }
                 if root.ez-step == 2: EzStep {
                     number: 2; total: 5;
                     title: "Create the household's book";
                     purpose: "The book is where all of your household's shared money is recorded. It stays on this computer.";
-                    can-back: false;
-                    Field { label: "Book name"; placeholder: "Home"; text <=> root.new-book-name; }
-                    Switch { text: "Make it a Hyperbook"; checked <=> root.new-book-hyperbook; }
-                    Hint { text: "A Hyperbook keeps every change for good, chained so no one can quietly rewrite the past. You choose now; it can't be changed later."; }
-                    Field { label: "Password (optional: encrypts the book)"; secret: true; text <=> root.new-book-password; }
-                    BigButton { text: "Create the book"; enabled: root.new-book-name != ""; clicked => { root.hub-new-book(); } }
+                    back => { root.ez-back(); }
+                    // a book is already open: keep it, or close it to create another
+                    if root.hub-current-name != "": Text { text: "✓ Working in " + root.hub-current-name + "."; color: Theme.ink; wrap: word-wrap; }
+                    if root.hub-current-name != "": Hint { text: root.hub-current-detail; }
+                    if root.hub-current-name != "": BigButton { text: "Next: use " + root.hub-current-name; clicked => { root.ez-next(); } }
+                    if root.hub-current-name != "": BigButton { text: "Close it, to create a different book"; primary: false; clicked => { root.hub-close-book(); } }
+                    if root.hub-current-name == "": Field { label: "Book name"; placeholder: "Home"; text <=> root.new-book-name; }
+                    if root.hub-current-name == "": Switch { text: "Make it a Hyperbook"; checked <=> root.new-book-hyperbook; }
+                    if root.hub-current-name == "": Hint { text: "A Hyperbook keeps every change for good, chained so no one can quietly rewrite the past. You choose now; it can't be changed later."; }
+                    if root.hub-current-name == "": Field { label: "Password (optional: encrypts the book)"; secret: true; text <=> root.new-book-password; }
+                    if root.hub-current-name == "": BigButton { text: "Create the book"; enabled: root.new-book-name != ""; clicked => { root.hub-new-book(); } }
+                    if root.hub-current-name == "" && root.hub-books.length > 0: Hint { text: "Or open one of this hub's other books on the Hub tab (Skip EZ Start below)."; }
                 }
                 if root.ez-step == 3: EzStep {
                     number: 3; total: 5;
                     title: "Add the people";
                     purpose: "Everyone who shares money in this household: you too. Each person gets their own balance and approves the rules.";
-                    can-back: false;
+                    back => { root.ez-back(); }
                     for m in root.hub-agreement-members: Text { text: "✓ " + m.label; color: Theme.ink; }
                     Field { label: "Name"; placeholder: "Sam"; text <=> root.new-member-name; }
                     BigButton { text: "Add this person"; primary: false; enabled: root.new-member-name != ""; clicked => { root.hub-add-member(); } }
@@ -543,6 +552,7 @@ export component AppWindow inherits Window {
                     Hint { text: "Who shares in it:"; }
                     ChipStrip { chips: root.hub-agreement-members; picked(id) => { root.hub-member-picked(id); } }
                     BigButton { text: "Create the agreement"; enabled: root.new-agreement-name != "" && root.hub-pick-count > 0; clicked => { root.hub-new-agreement(); } }
+                    if root.ez-has-agreement: BigButton { text: "Next: the agreements are made"; primary: false; clicked => { root.ez-next(); } }
                 }
                 if root.ez-step == 5: EzStep {
                     number: 5; total: 5;

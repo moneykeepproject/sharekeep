@@ -1675,6 +1675,8 @@ impl State {
         ));
         ui.set_hub_pick_count(self.hub_pick.len() as i32);
         ui.set_ez_people(self.hub_ledger.members.len() as i32);
+        ui.set_ez_has_agreement(!self.hub_ledger.agreements.is_empty());
+        ui.set_hub_pin_set(self.hub_pin_set);
         ui.set_ez_step(self.ez_step(ui));
     }
 
@@ -1759,18 +1761,25 @@ impl State {
         self.ez_manual.map_or(auto, |m| m.min(auto))
     }
 
+    /// Back one step, to any step: a step already done shows what was done, to change it or
+    /// go on.
     pub fn ez_back(&mut self, ui: &AppWindow) {
         let now = self.ez_step(ui);
-        self.ez_manual = Some((now - 1).max(3));
+        self.ez_manual = Some((now - 1).max(1));
         if now == 4 {
             self.ez_people_done = false;
         }
         self.refresh_hub(ui);
     }
 
+    /// On to the next step, keeping what this one has.
     pub fn ez_next(&mut self, ui: &AppWindow) {
-        self.ez_people_done = true;
-        self.ez_manual = None;
+        let now = self.ez_step(ui);
+        if now >= 3 {
+            self.ez_people_done = true;
+        }
+        // the step after this one, but never past where setup stands
+        self.ez_manual = Some(now + 1);
         self.refresh_hub(ui);
     }
 

@@ -20,7 +20,7 @@ impl Platform for Headless {
 #[test]
 fn every_form_makes_a_record_the_book_accepts() {
     let win = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    slint::platform::set_platform(Box::new(Headless(win))).unwrap();
+    let _ = slint::platform::set_platform(Box::new(Headless(win)));
     let ui = AppWindow::new().unwrap();
     let today = NaiveDate::from_ymd_opt(2027, 3, 14).unwrap();
     let (jobs, _rx) = std::sync::mpsc::channel();
@@ -120,4 +120,43 @@ fn every_form_makes_a_record_the_book_accepts() {
         }
         assert_eq!(check(&st, &ui), "deposit");
     }
+}
+
+#[test]
+fn ez_start_goes_back_to_any_step_and_on_again() {
+    // the headless platform is set once per test binary
+    let win = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let _ = slint::platform::set_platform(Box::new(Headless(win)));
+    let ui = AppWindow::new().unwrap();
+    let (jobs, _rx) = std::sync::mpsc::channel();
+    let mut st = State::new(std::env::temp_dir(), AppConfig::default(), jobs, true);
+    // where Jerry was: the PIN is set, Home is open, people are being added
+    st.hub_pin_set = true;
+    ui.set_hub_current_name("Home".into());
+    let mut l = sk_ledger::Ledger::new();
+    l.members.insert(sk_core::MemberId(1), "Jerry".into());
+    st.hub_ledger = l;
+    st.refresh(&ui);
+    assert_eq!(ui.get_ez_step(), 3);
+    st.ez_back(&ui);
+    assert_eq!(ui.get_ez_step(), 2, "back to the book");
+    st.ez_back(&ui);
+    assert_eq!(ui.get_ez_step(), 1, "back to the PIN");
+    st.ez_back(&ui);
+    assert_eq!(ui.get_ez_step(), 1, "step 1 is the first");
+    st.ez_next(&ui);
+    assert_eq!(ui.get_ez_step(), 2, "keep the PIN");
+    st.ez_next(&ui);
+    assert_eq!(ui.get_ez_step(), 3, "keep the book");
+    // Next can't go past where setup stands: there's no agreement yet
+    st.ez_next(&ui);
+    assert_eq!(ui.get_ez_step(), 4);
+    st.ez_next(&ui);
+    assert_eq!(
+        ui.get_ez_step(),
+        4,
+        "the agreement step waits for an agreement"
+    );
+    st.ez_back(&ui);
+    assert_eq!(ui.get_ez_step(), 3);
 }
