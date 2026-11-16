@@ -66,7 +66,13 @@ pairing code copied from MoneyKeep).
   `accept_restore` drops the device's later records, fetches the hub's, and the app then
   submits `restore-accept`. Until then the device sends nothing. A record whose kind isn't in
   `sk_ledger::KINDS` (the hub runs a newer ShareKeep) stops the sync: the device keeps the
-  history up to the record before it and says to update ShareKeep. "Last synced" is kept for
+  history up to the record before it and says to update ShareKeep.
+- **Starting from a checkpoint**: a checkpoint given when pairing (`Replica::expect`) must be
+  in the hub's history before the device keeps anything; otherwise the sync answers
+  `CheckpointNotKept` and the device stays empty until the history contains it or the member
+  forgets the checkpoint (`forget_expected`).
+- The admin `lost` answer also has `text`: the same list in plain words, to save and enter
+  again. "Last synced" is kept for
   the offline banner and "This device last saw record N on <date>".
 
 ## Later (milestone 4)

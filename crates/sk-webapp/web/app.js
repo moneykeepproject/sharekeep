@@ -209,6 +209,13 @@ async function checkHistory(v) {
     return;
   }
   const r = (v.restores || []).filter((x) => x.to_seq < seen.seq).pop();
+  if (seen.checkpoint && r) {
+    // a new device that started from a checkpoint the household's restore no longer holds:
+    // there is nothing of its own to lose, but the member still accepts the restore
+    S.restoreOffer = { seq: r.seq, date: r.date, to_seq: r.to_seq, lost_from: r.to_seq + 1, lost_to: seen.seq };
+    S.rewritten = false;
+    return;
+  }
   if (r && !r.accepted_by_me) {
     S.restoreOffer = { seq: r.seq, date: r.date, to_seq: r.to_seq, lost_from: r.to_seq + 1, lost_to: seen.seq };
     S.rewritten = false;
@@ -295,8 +302,10 @@ async function pair(code, pin, device) {
     store.set('device', device);
     saveQueue();
     S.page = 'home';
-    S.seen = null;
-    store.del('seen');
+    // start from the household's checkpoint, if one was given: the first sync checks the hub
+    const cp = S.join && S.join.checkpoint ? parseCheckpoint(S.join.checkpoint) : null;
+    S.seen = cp ? { seq: cp.seq, hash: cp.hash, date: '', checkpoint: true } : null;
+    if (S.seen) store.set('seen', S.seen); else store.del('seen');
     await sync();
     // EZ Start's last, optional step for a Hyperbook: a checkpoint kept outside the house
     if (isHyperbook() && S.view) checkpointSheet('Optional: a first checkpoint');
@@ -359,8 +368,18 @@ function status() {
       h('div', { class: 'row end' }, h('button', { class: 'btn', onclick: acceptRestore }, 'Accept'))));
   }
   if (S.rewritten) {
-    out.push(h('div', { class: 'banner warn' }, 'Warning: the hub\'s history was changed since this device last saw record '
-      + S.seen.seq + '. Nothing here was changed. Ask the household what happened; Settings > Verify checks the book.'));
+    out.push(h('div', { class: 'banner warn' }, S.seen.checkpoint
+      ? "Warning: the hub's history doesn't contain your checkpoint (record " + S.seen.seq + '). Ask the household what happened; if the checkpoint was typed wrong, forget it.'
+      : "Warning: the hub's history was changed since this device last saw record " + S.seen.seq + '. Nothing here was changed. Ask the household what happened; Settings > Verify checks the book.',
+    h('div', { class: 'row end' }, h('button', { class: 'link red', onclick: () => {
+      // a second tap within 4 s, like Delete
+      if (S.armed !== 'forget-seen') { S.armed = 'forget-seen'; toast(S.seen.checkpoint ? 'Tap again to forget the checkpoint.' : 'Tap again to accept the hub\'s history as it is now.'); return; }
+      S.armed = null;
+      S.seen = null;
+      S.rewritten = false;
+      store.del('seen');
+      sync();
+    } }, S.seen.checkpoint ? 'Forget the checkpoint' : "Accept the hub's history"))));
   }
   if (S.problem) {
     out.push(h('div', { class: 'banner warn' }, S.offline
@@ -394,7 +413,7 @@ const JOIN_STEPS = [
 ];
 
 function joinPage() {
-  S.join = S.join || { code: S.pairCode || '', pin: '', device: S.device || defaultDeviceName() };
+  S.join = S.join || { code: S.pairCode || '', pin: '', device: S.device || defaultDeviceName(), checkpoint: '' };
   if (S.pairCode && !S.join.code) S.join.code = S.pairCode;
   // a code from the QR code skips step 1
   if (!S.joinStep) S.joinStep = S.join.code ? 2 : 1;
@@ -405,6 +424,10 @@ function joinPage() {
     const why = step.check(S.join[step.key]);
     if (why) { err.textContent = why; return; }
     if (n < JOIN_STEPS.length) { S.joinStep = n + 1; render(); return; }
+    if (S.join.checkpoint.trim() && !parseCheckpoint(S.join.checkpoint)) {
+      err.textContent = "That checkpoint doesn't read: it needs the record number and the 64-character fingerprint. Leave it empty to join without one.";
+      return;
+    }
     e.target.disabled = true;
     pair(S.join.code, S.join.pin, S.join.device.trim()).finally(() => { e.target.disabled = false; });
   };
@@ -422,6 +445,11 @@ function joinPage() {
     h('div', { class: 'card' },
       n === 1 || !S.join.code ? null : h('p', { class: 'hint' }, 'Pairing code ' + S.join.code.replace(/[-\s]/g, '').toUpperCase().replace(/^(.{4})/, '$1-')),
       h('label', { class: 'field' }, step.label, input),
+      // the last step: optionally a checkpoint the household kept (Hyperbooks)
+      n === JOIN_STEPS.length ? h('details', { open: !!S.join.checkpoint },
+        h('summary', {}, 'I have a checkpoint (optional)'),
+        h('p', { class: 'hint' }, "If the household keeps a checkpoint of a Hyperbook, paste or type it: this device then checks that the hub's history still contains it."),
+        h('textarea', { rows: 3, oninput: (e) => { S.join.checkpoint = e.target.value; err.textContent = ''; } }, S.join.checkpoint)) : null,
       err,
       h('button', { class: 'btn', onclick: go }, n < JOIN_STEPS.length ? 'Next' : 'Join the household')),
     n > 1 ? h('button', { class: 'link', onclick: () => { S.joinStep = n - 1; render(); } }, '‹ Back to step ' + (n - 1)) : null,
@@ -674,7 +702,9 @@ function hyperbookCard() {
   return h('div', { class: 'card' }, h('h2', {}, 'Hyperbook'),
     head ? kv('History', 'record ' + head.seq) : null,
     head ? h('p', { class: 'hint mono' }, head.hash) : null,
-    seen ? h('p', { class: 'hint' }, 'This device last saw record ' + seen.seq + ' on ' + seen.date + '.') : null,
+    seen ? h('p', { class: 'hint' }, seen.checkpoint
+      ? 'Your checkpoint (record ' + seen.seq + ") isn't in the hub's history."
+      : 'This device last saw record ' + seen.seq + ' on ' + seen.date + '.') : null,
     stale,
     h('div', { class: 'row' },
       h('button', { class: 'btn secondary', onclick: () => checkpointSheet('Save a checkpoint') }, 'Save a checkpoint'),
@@ -708,7 +738,8 @@ function checkpointSheet(title) {
         h('button', { class: 'btn', onclick: async () => {
           try { await navigator.clipboard.writeText(text); toast('Copied.'); } catch { toast('Select the line and copy it.'); }
         } }, 'Copy'),
-        h('button', { class: 'btn secondary', onclick: () => saveText('ShareKeep checkpoint record ' + S.view.head.seq + '.txt', text + '\r\n', 'text/plain') }, 'Save as a file')));
+        h('button', { class: 'btn secondary', onclick: () => saveText('ShareKeep checkpoint record ' + S.view.head.seq + '.txt', text + '\r\n', 'text/plain') }, 'Save as a file'),
+        h('button', { class: 'btn secondary', onclick: () => window.print() }, 'Print')));
   });
 }
 

@@ -831,6 +831,12 @@ fn a_broken_hyperbook_is_restored_from_a_backup_and_devices_accept_it() {
         lost["records"].as_array().unwrap().len() as u64,
         seen.seq - backup_head
     );
+    let text = lost["text"].as_str().unwrap();
+    assert!(text.contains(&format!("record {} · ", seen.seq)), "{text}");
+    assert!(
+        text.contains("902"),
+        "the broken book's version of the record"
+    );
 
     // the broken history can be exported as it is
     let (s, ex) = h.admin(
@@ -953,4 +959,64 @@ fn a_device_stops_at_a_record_kind_it_does_not_know() {
         Err(SyncError::NeedsUpdate { .. })
     ));
     assert_eq!(Replica::open(dir.path()).unwrap().head(), Some(before));
+}
+
+#[test]
+fn a_new_device_can_start_from_a_checkpoint() {
+    let h = hub();
+    let (book, _) = household(&h, true, None);
+    let code = pairing_code(&h, &book, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    sam.submit_now("expense", &expense(100, 2)).unwrap();
+    // a checkpoint someone kept: the hub's current head
+    let old = tempfile::tempdir().unwrap();
+    let mut first = Replica::open(old.path()).unwrap();
+    first.sync(&sam, 1).unwrap();
+    let kept = first.head().unwrap();
+    sam.submit_now("expense", &expense(200, 2)).unwrap();
+
+    // the history contains it: the new device takes it all, and the checkpoint is done
+    let dir = tempfile::tempdir().unwrap();
+    let mut r = Replica::open(dir.path()).unwrap();
+    r.expect(kept).unwrap();
+    r.sync(&sam, 2).unwrap();
+    assert_eq!(r.expected(), None);
+    assert_eq!(r.head().unwrap().seq, kept.seq + 1);
+
+    // a wrong fingerprint: nothing is kept, and it stays that way until forgotten
+    let dir = tempfile::tempdir().unwrap();
+    let mut r = Replica::open(dir.path()).unwrap();
+    let wrong = sk_chain::Head {
+        seq: kept.seq,
+        hash: sk_chain::Hash::from_hex(&"0".repeat(64)).unwrap(),
+    };
+    r.expect(wrong).unwrap();
+    match r.sync(&sam, 3) {
+        Err(e @ SyncError::CheckpointNotKept(_)) => {
+            assert!(e.to_string().contains("is different there"), "{e}")
+        }
+        other => panic!("expected CheckpointNotKept, got {other:?}"),
+    }
+    assert_eq!(r.head(), None);
+    assert!(r.records().is_empty());
+    assert!(Replica::open(dir.path()).unwrap().expected().is_some());
+    assert!(r.sync(&sam, 4).is_err());
+    r.forget_expected().unwrap();
+    r.sync(&sam, 5).unwrap();
+    assert_eq!(r.head().unwrap().seq, kept.seq + 1);
+
+    // a checkpoint beyond the history's end: records were removed
+    let dir = tempfile::tempdir().unwrap();
+    let mut r = Replica::open(dir.path()).unwrap();
+    r.expect(sk_chain::Head {
+        seq: kept.seq + 50,
+        hash: kept.hash,
+    })
+    .unwrap();
+    match r.sync(&sam, 6) {
+        Err(e @ SyncError::CheckpointNotKept(_)) => {
+            assert!(e.to_string().contains("records were removed"), "{e}")
+        }
+        other => panic!("expected CheckpointNotKept, got {other:?}"),
+    }
 }

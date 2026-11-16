@@ -22,6 +22,7 @@ sk-chain.workspace = true
 sk-ledger.workspace = true
 sk-client.workspace = true
 sk-ui.workspace = true
+sk-report.workspace = true
 slint = { workspace = true, features = ["backend-winit", "renderer-femtovg", "renderer-software", "accessibility"] }
 rfd.workspace = true
 directories.workspace = true

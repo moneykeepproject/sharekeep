@@ -200,6 +200,110 @@ pub fn statement_pdf(s: &Statement, book: &str, currency: Currency) -> Result<Ve
     w.doc.save_to_bytes().map_err(|e| e.to_string())
 }
 
+/// A checkpoint to print or keep: the line, the fingerprint in groups for retyping, and a
+/// QR code of the line. `line` is `sk_chain::checkpoint::text`.
+pub fn checkpoint_pdf(
+    book: &str,
+    line: &str,
+    seq: u64,
+    fingerprint: &str,
+) -> Result<Vec<u8>, String> {
+    use qrcodegen::{QrCode, QrCodeEcc};
+    let mut w = Writer::new("ShareKeep checkpoint")?;
+    w.rect(0.0, PAGE_H - 34.0, PAGE_W, 34.0, ACCENT);
+    w.text_at(
+        "SHAREKEEP • MONEYKEEP FAMILY",
+        8.0,
+        MARGIN,
+        PAGE_H - 11.0,
+        true,
+        (204, 251, 241),
+    );
+    w.text_at(
+        "Checkpoint",
+        20.0,
+        MARGIN,
+        PAGE_H - 20.0,
+        true,
+        (255, 255, 255),
+    );
+    w.text_at(
+        &format!("{book} • record {seq}"),
+        9.5,
+        MARGIN,
+        PAGE_H - 27.5,
+        false,
+        (220, 252, 245),
+    );
+    w.y = PAGE_H - 42.0;
+    w.para(
+        "Keep this page somewhere outside the house. Later, anyone in the household can check \
+         that the book's history still contains this record, unchanged: ShareKeep > Settings > \
+         Hyperbook > Check a checkpoint, then type or paste the line below, or scan the code.",
+        10.0,
+        false,
+        INK,
+        0.0,
+    );
+    w.heading("The checkpoint");
+    w.para(line, 9.0, true, INK, 0.0);
+    w.heading("The fingerprint, for typing");
+    let groups: Vec<String> = fingerprint
+        .as_bytes()
+        .chunks(16)
+        .map(|c| {
+            c.chunks(4)
+                .map(|g| String::from_utf8_lossy(g).into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    for g in groups {
+        w.para(&g, 12.0, true, INK, 0.0);
+    }
+    w.para(
+        &format!(
+            "Record {seq}. Spaces, line breaks and capitals don't matter when you type it back."
+        ),
+        8.5,
+        false,
+        MUTED,
+        0.0,
+    );
+    let qr_text = line.replace('·', "|");
+    if let Ok(qr) = QrCode::encode_text(&qr_text, QrCodeEcc::Medium) {
+        let n = qr.size();
+        let side = 70.0_f32;
+        let m = side / n as f32;
+        w.need(side + 10.0);
+        w.y -= side + 8.0;
+        let x0 = (PAGE_W - side) / 2.0;
+        // one rectangle per run of dark modules in a row keeps the file small
+        for y in 0..n {
+            let mut x = 0;
+            while x < n {
+                if qr.get_module(x, y) {
+                    let start = x;
+                    while x < n && qr.get_module(x, y) {
+                        x += 1;
+                    }
+                    w.rect(
+                        x0 + start as f32 * m,
+                        w.y + (n - 1 - y) as f32 * m,
+                        (x - start) as f32 * m + 0.05,
+                        m + 0.05,
+                        INK,
+                    );
+                } else {
+                    x += 1;
+                }
+            }
+        }
+    }
+    w.footer(book);
+    w.doc.save_to_bytes().map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +354,15 @@ mod tests {
         assert!(
             text.matches("/Type /Page").count() >= 3 || text.matches("/Type/Page").count() >= 3
         );
+    }
+
+    #[test]
+    fn a_checkpoint_prints_as_a_one_page_pdf() {
+        let fp = "ab".repeat(32);
+        let line = format!("ShareKeep checkpoint · Home · record 17 · 2027-02-03 · {fp}");
+        let pdf = checkpoint_pdf("Home", &line, 17, &fp).unwrap();
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() < 200_000, "{} bytes", pdf.len());
+        std::fs::write(std::env::temp_dir().join("sk-checkpoint-test.pdf"), &pdf).unwrap();
     }
 }

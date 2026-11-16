@@ -91,3 +91,11 @@ h2.steptitle { font-size: 24px; }
 textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; }
 .line { border-top: 1px solid #e2e8f0; padding-top: 8px; margin-top: 8px; }
 .link.green { color: #15803d; }
+details summary { cursor: pointer; color: #0f766e; font-weight: 600; margin: 8px 0; }
+/* printing a checkpoint: only the sheet, on white */
+@media print {
+  #top, #tabs, #nav, #page, #toast { display: none !important; }
+  .scrim { position: static !important; background: none !important; display: block !important; }
+  .sheet { box-shadow: none !important; max-height: none !important; overflow: visible !important; }
+  .sheet .btn, .sheet .head .link { display: none !important; }
+}

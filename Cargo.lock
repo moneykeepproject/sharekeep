@@ -4482,6 +4482,7 @@ dependencies = [
  "sk-core",
  "sk-hub",
  "sk-ledger",
+ "sk-report",
  "sk-split",
  "sk-store",
  "sk-ui",
@@ -4632,6 +4633,7 @@ name = "sk-report"
 version = "0.1.0"
 dependencies = [
  "printpdf",
+ "qrcodegen",
  "sk-core",
  "sk-ledger",
 ]

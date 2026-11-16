@@ -78,6 +78,7 @@ try:
         pg.wait_for_selector('.sheet >> text=Optional: a first checkpoint')
         cp = pg.text_content('.sheet .mono')
         assert cp.startswith('ShareKeep checkpoint · Home · record '), cp
+        assert pg.locator('.sheet button.btn:has-text("Print")').count() == 1
         pg.screenshot(path=f'{out}/01b-checkpoint.png')
         pg.click('.sheet button.link:has-text("Close")')
         pg.wait_for_selector('text=Apartment')
@@ -260,6 +261,32 @@ try:
         pg.wait_for_selector('text=Payment')
         time.sleep(0.5)
         assert pg.locator('text=waiting to send').count() == 0
+        # a second phone joins with a checkpoint: Sam's, kept, then one typed wrong
+        for typed, ok in [(cp, True), (cp[:-1] + ('0' if cp[-1] != '0' else '1'), False)]:
+            code3 = admin('POST', 'pairing', {'book_id': book, 'member': 3})
+            ctx3 = b.new_context(viewport={'width': 400, 'height': 820}, ignore_https_errors=True)
+            p3 = ctx3.new_page()
+            p3.on('pageerror', lambda e: errors.append(str(e)))
+            p3.goto(code3['url'])
+            p3.wait_for_selector('text=Step 2 of 3')
+            p3.fill('input[type=password]', '482916')
+            p3.click('text=Next')
+            p3.fill('label:has-text("Device name") input', "Alex's phone")
+            p3.click('text=I have a checkpoint (optional)')
+            p3.fill('details textarea', typed)
+            p3.click('text=Join the household')
+            p3.wait_for_selector('.sheet >> text=Optional: a first checkpoint')
+            p3.click('.sheet button.link:has-text("Close")')
+            p3.wait_for_selector('text=Apartment')
+            time.sleep(0.5)
+            warned = p3.locator("text=doesn't contain your checkpoint").count()
+            assert warned == (0 if ok else 1), (ok, warned)
+            if not ok:
+                p3.screenshot(path=f'{out}/16-checkpoint-not-kept.png')
+                p3.click('text=Forget the checkpoint')
+                p3.click('text=Forget the checkpoint')
+                p3.wait_for_selector("text=doesn't contain your checkpoint", state='detached')
+            ctx3.close()
         sw = pg.evaluate('navigator.serviceWorker.getRegistrations().then(r => r.length)')
         print('service workers', sw)
         b.close()

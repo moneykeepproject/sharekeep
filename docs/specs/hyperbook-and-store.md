@@ -60,6 +60,9 @@ A head written as one line, `ShareKeep checkpoint · <book> · record N · <date
 and a QR code, for keeping outside the house. `parse` is forgiving (case, spaces, line breaks
 inside the fingerprint; a book named "Records"). `check` answers kept, rewritten, or missing
 (the history ends earlier). The hub doesn't store checkpoints: it is the party being checked.
+QR codes carry the line with `|` separators (`for_qr`), because scanners can garble `·`;
+`parse` reads both. `sk_report::checkpoint_pdf` prints a checkpoint: the line, the fingerprint
+in groups of four for retyping, and the QR code.
 
 ## Recovery
 

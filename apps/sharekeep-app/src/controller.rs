@@ -71,6 +71,10 @@ pub struct State {
     offer_checkpoint: bool,
     /// The form sheet's state.
     pub form: Option<crate::forms::Form>,
+    /// A checkpoint typed in when pairing, handed to the worker with the connection.
+    pair_expect: Option<sk_chain::Head>,
+    /// The hub's history didn't contain that checkpoint.
+    pub checkpoint_failed: bool,
 }
 
 pub(crate) fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
@@ -153,6 +157,8 @@ impl State {
             rec_backup: None,
             offer_checkpoint: false,
             form: None,
+            pair_expect: None,
+            checkpoint_failed: false,
         }
     }
 
@@ -188,11 +194,13 @@ impl State {
     }
 
     /// Start using the saved pairing.
-    pub fn connect(&self) {
+    pub fn connect(&mut self) {
         if let (Some(hub), Some(token)) = (self.cfg.hub.clone(), self.cfg.token.clone()) {
+            let expect = self.pair_expect.take();
             self.send(Job::Connect {
                 client: Client::new(hub, token),
                 book_dir: self.book_dir(),
+                expect,
             });
         }
     }
@@ -238,6 +246,7 @@ impl State {
                 }
                 self.restore = sync.restore;
                 self.seen = sync.seen;
+                self.checkpoint_failed = sync.checkpoint_failed;
                 if self.offer_checkpoint && !self.records.is_empty() {
                     self.offer_checkpoint = false;
                     if self.hyperbook() {
@@ -504,6 +513,7 @@ impl State {
 
     fn refresh_hyperbook(&self, ui: &AppWindow) {
         ui.set_is_hyperbook(self.hyperbook());
+        ui.set_checkpoint_failed(self.checkpoint_failed);
         ui.set_restore_text(s(self
             .restore
             .as_ref()
@@ -543,8 +553,66 @@ impl State {
         };
         let book = self.cfg.book.as_ref().map_or("Book", |b| b.name.as_str());
         let text = sk_chain::checkpoint::text(book, head, &self.today.to_string());
-        ui.set_checkpoint_qr(qr_image(&text));
+        ui.set_checkpoint_qr(qr_image(&sk_chain::checkpoint::for_qr(&text)));
         ui.set_checkpoint_text(s(text));
+    }
+
+    pub fn save_checkpoint_pdf(&self, ui: &AppWindow) {
+        let Some(head) = self.records.last().map(sk_chain::Record::head) else {
+            return;
+        };
+        let book = self
+            .cfg
+            .book
+            .as_ref()
+            .map_or("Book", |b| b.name.as_str())
+            .to_string();
+        let line = sk_chain::checkpoint::text(&book, head, &self.today.to_string());
+        let bytes = match sk_report::checkpoint_pdf(&book, &line, head.seq, &head.hash.to_hex()) {
+            Ok(b) => b,
+            Err(e) => return toast(ui, &e),
+        };
+        let jobs = self.jobs.clone();
+        crate::dialogs::save_file(
+            ui.window(),
+            "Save the checkpoint to print",
+            &format!("ShareKeep checkpoint record {}.pdf", head.seq),
+            ("PDF", &["pdf"]),
+            move |path| {
+                if let Some(path) = path {
+                    let _ = jobs.send(Job::SaveBytes { path, bytes });
+                }
+            },
+        );
+    }
+
+    pub fn forget_checkpoint(&self) {
+        let _ = self.jobs.send(Job::ForgetCheckpoint);
+    }
+
+    pub fn hub_save_lost(&self, ui: &AppWindow) {
+        let (Some(file), Some(backup)) = (self.rec_file.clone(), self.rec_backup.clone()) else {
+            return;
+        };
+        let mut body = Self::unlock_body(ui);
+        body["backup"] = json!(backup);
+        let jobs = self.jobs.clone();
+        crate::dialogs::save_file(
+            ui.window(),
+            "Save the list to enter again",
+            "ShareKeep records to enter again.txt",
+            ("Text", &["txt"]),
+            move |path| {
+                if let Some(path) = path {
+                    let _ = jobs.send(Job::Admin {
+                        method: "POST",
+                        path: format!("/admin/v1/books/{file}/lost"),
+                        body: Some(body),
+                        then: AdminThen::SaveText(path),
+                    });
+                }
+            },
+        );
     }
 
     pub fn save_checkpoint_file(&self, ui: &AppWindow) {
@@ -1543,13 +1611,26 @@ impl State {
         self.send(Job::FindHub(ui.get_hub_address().to_string()));
     }
 
-    pub fn pair(&self, ui: &AppWindow) {
+    pub fn pair(&mut self, ui: &AppWindow) {
         let Some(hub) = self.found.clone() else {
             return ui.set_connect_error(s("Find the hub first."));
         };
         let device = ui.get_device_name().trim().to_string();
         if device.is_empty() {
             return ui.set_connect_error(s("Name this device, like Sam's laptop."));
+        }
+        // optional: a checkpoint the household kept, which the hub's history must contain
+        let cp = ui.get_connect_checkpoint().trim().to_string();
+        self.pair_expect = None;
+        if !cp.is_empty() {
+            match sk_chain::checkpoint::parse(&cp) {
+                Some(h) => self.pair_expect = Some(h),
+                None => {
+                    return ui.set_connect_error(s(
+                        "That checkpoint doesn't read: it needs the record number and the 64-character fingerprint. Leave it empty to pair without one.",
+                    ))
+                }
+            }
         }
         ui.set_busy(true);
         self.send(Job::Pair {

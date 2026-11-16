@@ -23,6 +23,12 @@ pub fn text(book: &str, head: Head, date: &str) -> String {
     )
 }
 
+/// The text for a QR code: the same line with plain `|` separators, because scanners guess
+/// the character encoding and can garble `·`. [`parse`] reads either.
+pub fn for_qr(text: &str) -> String {
+    text.replace('·', "|")
+}
+
 /// The head in a checkpoint's text: forgiving about spacing, line breaks and case, so a
 /// checkpoint typed back from paper or pasted from an email still reads.
 pub fn parse(text: &str) -> Option<Head> {
@@ -131,6 +137,8 @@ mod tests {
         assert_eq!(parse("no record here"), None);
         let t = text("Records", g.head(), "2027-02-03");
         assert_eq!(parse(&t), Some(g.head()));
+        assert!(for_qr(&t).is_ascii());
+        assert_eq!(parse(&for_qr(&t)), Some(g.head()));
     }
 
     #[test]

@@ -89,6 +89,9 @@ No tabs or other screens while it runs; Back where going back makes sense.
   Check a checkpoint (this device's copy, then the hub), Check a statement (a PDF from an
   open dialog, hashed by the worker). Offered as a toast after pairing and after closing a
   period.
+- Pairing (EZ Start step 3) takes an optional checkpoint; if the hub's history doesn't
+  contain it, Settings says so with "Forget the checkpoint". Checkpoints also save as a PDF to
+  print. The recovery screen saves "what would be lost" as a text file.
 - Settings > Verify runs `sk_ledger::audit` on this device's own copy.
 - Periods: Export to a spreadsheet (CSV), written by the worker.
 - A restored backup shows on Home and Settings with "Accept and carry on"; nothing is sent

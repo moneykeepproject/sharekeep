@@ -79,7 +79,7 @@ fn main() -> Result<(), slint::PlatformError> {
         .map_err(|e| slint::PlatformError::Other(e.to_string()))?;
 
     let paired = cfg.paired();
-    let state = State::new(dir, cfg, jobs, is_hub);
+    let mut state = State::new(dir, cfg, jobs, is_hub);
     // the hub computer starts with EZ Start until it's finished or skipped
     ui.set_page(if is_hub && !state.cfg.ez_done {
         6
@@ -210,6 +210,9 @@ fn wire(ui: &AppWindow) {
     on!(on_hub_remove_device, |st, _u, id: i32| st
         .hub_remove_device(id));
     on!(on_save_checkpoint, |st, u| st.save_checkpoint(u));
+    on!(on_save_checkpoint_pdf, |st, u| st.save_checkpoint_pdf(u));
+    on!(on_forget_checkpoint, |st, _u| st.forget_checkpoint());
+    on!(on_hub_save_lost, |st, u| st.hub_save_lost(u));
     on!(on_open_form, |st, u, what: slint::SharedString| st
         .open_form(u, &what));
     on!(on_form_kind, |st, u, i: i32| st.form_kind(u, i));

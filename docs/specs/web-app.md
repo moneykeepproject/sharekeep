@@ -60,6 +60,10 @@ a period's CSV); it needs Python's playwright and is not part of CI.
   otherwise a warning that the history was changed.
 - Settings > Hyperbook: the head, "last saw", Save a checkpoint (copy, save as a file),
   Check a checkpoint (against the hub), Check a statement (`crypto.subtle` SHA-256 of a
-  picked PDF, matched against the view's seals; the file stays on the device). The first
+  picked PDF, matched against the view's seals; the file stays on the device). Print prints
+  only the checkpoint sheet. Joining's last step takes an optional checkpoint ("I have a
+  checkpoint"): the first sync checks the hub against it. If it isn't there, a warning offers
+  "Forget the checkpoint" (two taps); a household restore covering it becomes the usual
+  accept offer. The "history was changed" warning offers "Accept the hub's history". The first
   checkpoint is offered after pairing and after closing a period.
 - Settings > Verify (`/api/v1/verify`); Periods > Export to a spreadsheet (CSV).

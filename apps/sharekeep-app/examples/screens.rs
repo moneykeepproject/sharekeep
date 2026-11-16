@@ -182,6 +182,13 @@ fn main() {
     ui.set_page(1);
     shot(&win, w, h, &p("23-restore-offer"));
     st.restore = None;
+    st.checkpoint_failed = true;
+    st.problem = Some("The hub's history doesn't match your checkpoint: record 17 is different there. This device kept nothing. If the checkpoint was typed wrong, or the household restored a backup and agreed to it, forget the checkpoint in Settings.".into());
+    st.refresh(&ui);
+    ui.set_page(4);
+    shot(&win, w, h, &p("24-checkpoint-not-kept"));
+    st.checkpoint_failed = false;
+    st.problem = None;
     st.refresh(&ui);
 
     // sheets

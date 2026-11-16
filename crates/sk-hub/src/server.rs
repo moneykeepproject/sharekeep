@@ -1299,7 +1299,28 @@ fn lost(shared: &Shared, file: &str, b: &RecoveryRequest) -> Answer {
             })
         })
         .collect();
-    Ok(json!({"after": head, "records": rows, "verified": false}))
+    // the same list in plain words, to save and enter again later
+    let mut text = format!(
+        "ShareKeep: records not in the backup {}\r\nThe backup ends at record {head}. These records are as the broken book has them: they can't be checked.\r\n\r\n",
+        b.backup
+    );
+    for r in &records {
+        text.push_str(&format!(
+            "record {} · {} · {} · by {} on {} · {}\r\n",
+            r.seq,
+            sk_ledger::day_of(r.ts),
+            r.kind,
+            r.author
+                .member
+                .map_or("the hub computer".to_string(), |m| format!(
+                    "member {}",
+                    m.0
+                )),
+            r.author.device,
+            r.body
+        ));
+    }
+    Ok(json!({"after": head, "records": rows, "verified": false, "text": text}))
 }
 
 /// The broken history as it is (one record per line), with where it breaks.

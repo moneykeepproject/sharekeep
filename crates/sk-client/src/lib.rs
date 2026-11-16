@@ -478,6 +478,8 @@ pub enum SyncError {
     /// The household restored a backup: the hub carries on from a point before this
     /// device's last record. The local copy is kept until the person accepts.
     Restored(RestoreOffer),
+    /// The hub's history doesn't contain the checkpoint given when pairing. Nothing is kept.
+    CheckpointNotKept(String),
     /// The hub's history has a record kind this version doesn't know: the hub runs a newer
     /// ShareKeep. Nothing new is taken in until this device is updated.
     NeedsUpdate {
@@ -529,6 +531,7 @@ impl fmt::Display for SyncError {
                 write!(f, "The hub sent a history that doesn't check out ({b}).")
             }
             SyncError::Restored(o) => write!(f, "{}", o.text()),
+            SyncError::CheckpointNotKept(why) => write!(f, "{why}"),
             SyncError::NeedsUpdate { seq, kind } => write!(
                 f,
                 "The hub runs a newer ShareKeep: record {seq} is a \"{kind}\" this version doesn't know. Update ShareKeep on this device; until then it shows the history up to record {}.",
@@ -544,6 +547,10 @@ impl std::error::Error for SyncError {}
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ReplicaMeta {
     head: Option<Head>,
+    /// A checkpoint given when pairing: the hub's history must contain it before this
+    /// device keeps anything.
+    #[serde(default)]
+    expect: Option<Head>,
     /// When the last sync finished (ms since 1970 UTC).
     last_synced: Option<i64>,
 }
@@ -667,9 +674,53 @@ impl Replica {
                 break;
             }
         }
+        self.check_expected()?;
         self.meta.last_synced = Some(now);
         self.save().map_err(SyncError::Local)?;
         Ok(added)
+    }
+
+    /// Start from a checkpoint: the next sync keeps the hub's history only if it contains it.
+    pub fn expect(&mut self, head: Head) -> Result<(), String> {
+        self.meta.expect = Some(head);
+        self.save()
+    }
+
+    /// The checkpoint this device still waits to see, if any.
+    pub fn expected(&self) -> Option<Head> {
+        self.meta.expect
+    }
+
+    /// Give up the checkpoint (a typing mistake, or a restore the household agreed to).
+    pub fn forget_expected(&mut self) -> Result<(), String> {
+        self.meta.expect = None;
+        self.save()
+    }
+
+    fn check_expected(&mut self) -> Result<(), SyncError> {
+        use sk_chain::checkpoint::{check, Found};
+        let Some(e) = self.meta.expect else {
+            return Ok(());
+        };
+        let why = match check(&self.records, e) {
+            Found::Kept => {
+                self.meta.expect = None;
+                return Ok(());
+            }
+            Found::Rewritten => format!(
+                "The hub's history doesn't match your checkpoint: record {} is different there. This device kept nothing. If the checkpoint was typed wrong, or the household restored a backup and agreed to it, forget the checkpoint in Settings.",
+                e.seq
+            ),
+            Found::Missing { have } => format!(
+                "The hub's history ends at record {}, before your checkpoint (record {}): records were removed. This device kept nothing. If the checkpoint was typed wrong, forget it in Settings.",
+                have.map_or(0, |h| h),
+                e.seq
+            ),
+        };
+        self.records.clear();
+        self.meta.head = None;
+        self.save().map_err(SyncError::Local)?;
+        Err(SyncError::CheckpointNotKept(why))
     }
 
     /// When the hub's history differs from ours: is it because a backup was restored? That

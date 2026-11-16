@@ -11,3 +11,4 @@ repository.workspace = true
 sk-core.workspace = true
 sk-ledger.workspace = true
 printpdf.workspace = true
+qrcodegen.workspace = true

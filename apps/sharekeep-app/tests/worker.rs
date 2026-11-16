@@ -132,6 +132,7 @@ fn a_device_pairs_syncs_sends_and_queues_while_offline() {
             let s = synced(w.handle(Job::Connect {
                 client,
                 book_dir: dir.path().join("device"),
+                expect: None,
             }));
             assert!(s.problem.is_none(), "{:?}", s.problem);
             let l = Ledger::replay(&s.records.unwrap()).0;

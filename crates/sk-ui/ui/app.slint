@@ -244,6 +244,7 @@ export component AppWindow inherits Window {
     in-out property <string> connect-code;
     in-out property <string> connect-pin;
     in-out property <string> device-name;
+    in-out property <string> connect-checkpoint;
     in property <string> connect-error;
     in property <bool> busy;
     // EZ Start: the step on screen (joining: 1–3; the hub computer: 1–5)
@@ -334,6 +335,7 @@ export component AppWindow inherits Window {
     in property <string> verify-answer;
     in property <bool> verify-ok;
     in property <string> restore-text;
+    in property <bool> checkpoint-failed;
 
     // the hub computer
     in-out property <string> hub-pin;
@@ -423,6 +425,9 @@ export component AppWindow inherits Window {
     callback hub-remove-device(int);
     callback save-checkpoint();
     callback save-checkpoint-file();
+    callback save-checkpoint-pdf();
+    callback forget-checkpoint();
+    callback hub-save-lost();
     callback check-checkpoint();
     callback check-statement();
     callback verify();
@@ -491,6 +496,8 @@ export component AppWindow inherits Window {
                     Field { label: "Pairing code"; placeholder: "ABCD-EFGH"; text <=> root.connect-code; }
                     Field { label: "Household PIN"; placeholder: "6 to 12 digits"; secret: true; text <=> root.connect-pin; }
                     Field { label: "Name this device"; placeholder: "Sam's laptop"; text <=> root.device-name; }
+                    Field { label: "Checkpoint (optional)"; placeholder: "ShareKeep checkpoint · …"; text <=> root.connect-checkpoint; }
+                    Hint { text: "If the household keeps a checkpoint of a Hyperbook, paste or type it: this device then checks that the hub's history still contains it before using the book."; }
                     BigButton { text: root.busy ? "Pairing…" : "Pair this device"; enabled: !root.busy && root.connect-code != "" && root.connect-pin != "" && root.device-name != ""; clicked => { root.pair(); } }
                     if root.connect-error != "": Text { text: root.connect-error; color: Theme.red; wrap: word-wrap; }
                 }
@@ -777,6 +784,13 @@ export component AppWindow inherits Window {
                     Hint { text: root.restore-text; }
                     BigButton { text: "Accept and carry on"; clicked => { root.accept-restore(); } }
                 }
+                if root.checkpoint-failed: Card {
+                    stripe: Theme.red;
+                    SectionTitle { text: "Your checkpoint isn't in the hub's history"; }
+                    Hint { text: root.banner; }
+                    Hint { text: "If it was typed wrong, or the household restored a backup and agreed to it, forget it and this device uses the hub's history as it is."; }
+                    BigButton { text: "Forget the checkpoint"; primary: false; danger: true; clicked => { root.forget-checkpoint(); } }
+                }
                 if root.is-hyperbook: Card {
                     SectionTitle { text: "Hyperbook"; }
                     KeyValue { label: "History"; value: root.hb-head; }
@@ -789,7 +803,11 @@ export component AppWindow inherits Window {
                         Hint { text: "Keep this outside the house: print it, photograph the QR code, or email it to yourself. Check a checkpoint shows later whether the history still contains it, unchanged."; }
                         LineEdit { text: root.checkpoint-text; read-only: true; min-height: 40px; }
                         Image { source: root.checkpoint-qr; width: 180px; height: 180px; image-rendering: pixelated; horizontal-alignment: center; }
-                        BigButton { text: "Save as a file"; primary: false; clicked => { root.save-checkpoint-file(); } }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            BigButton { text: "Save as PDF (to print)"; primary: false; clicked => { root.save-checkpoint-pdf(); } }
+                            BigButton { text: "Save as text"; primary: false; clicked => { root.save-checkpoint-file(); } }
+                        }
                     }
                     Field { label: "Check a checkpoint: paste or type it"; placeholder: "ShareKeep checkpoint · …"; text <=> root.checkpoint-input; }
                     BigButton { text: "Check it"; primary: false; enabled: root.checkpoint-input != ""; clicked => { root.check-checkpoint(); } }
@@ -864,6 +882,7 @@ export component AppWindow inherits Window {
                     }
                     if root.rec-backups.length == 0: Hint { text: "There are no backups of this book on the hub."; }
                     if root.rec-lost != "": Banner { text: root.rec-lost; warn: true; }
+                    if root.rec-lost != "": LinkButton { text: "Save this list (to enter them again)"; clicked => { root.hub-save-lost(); } }
                     if root.rec-backup != "": BigButton { text: "Restore it"; danger: true; clicked => { root.hub-restore(); } }
                     BigButton { text: "Save the broken history as it is"; primary: false; clicked => { root.hub-export-broken(); } }
                     LinkButton { text: "Cancel"; clicked => { root.hub-recover-cancel(); } }

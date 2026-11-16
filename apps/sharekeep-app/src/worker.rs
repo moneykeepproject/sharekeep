@@ -26,7 +26,11 @@ pub enum Job {
     Connect {
         client: Client,
         book_dir: PathBuf,
+        /// A checkpoint given when pairing: the history must contain it.
+        expect: Option<Head>,
     },
+    /// Give up the checkpoint given when pairing.
+    ForgetCheckpoint,
     /// Send what waits, then fetch what's new.
     Sync,
     /// A change: queued if it may wait offline, otherwise sent now or refused.
@@ -51,6 +55,11 @@ pub enum Job {
     SaveText {
         path: PathBuf,
         text: String,
+    },
+    /// Write bytes to a file (a checkpoint as PDF).
+    SaveBytes {
+        path: PathBuf,
+        bytes: Vec<u8>,
     },
     /// A call to the hub computer's own admin port.
     Admin {
@@ -107,6 +116,8 @@ pub struct Synced {
     pub restore: Option<RestoreOffer>,
     /// The last record this device has, and when it last synced (ms).
     pub seen: Option<(u64, i64)>,
+    /// A checkpoint given when pairing that the hub's history doesn't contain.
+    pub checkpoint_failed: bool,
 }
 
 struct Paired {
@@ -173,8 +184,20 @@ impl Worker {
                 Client::pair(hub, code.trim(), pin.trim(), device.trim())
                     .map_err(|e| e.to_string()),
             ),
-            Job::Connect { client, book_dir } => match open_local(&book_dir) {
-                Ok((replica, outbox)) => {
+            Job::Connect {
+                client,
+                book_dir,
+                expect,
+            } => match open_local(&book_dir) {
+                Ok((mut replica, outbox)) => {
+                    if let Some(h) = expect {
+                        if let Err(e) = replica.expect(h) {
+                            return Some(Outcome::Synced(Synced {
+                                problem: Some(e),
+                                ..Default::default()
+                            }));
+                        }
+                    }
                     self.last_head = None;
                     self.paired = Some(Paired {
                         client,
@@ -250,6 +273,17 @@ impl Worker {
                     .map(|b| sk_chain::Hash::of(&b).to_hex())
                     .map_err(|e| format!("The file can't be read ({e}).")),
             ),
+            Job::ForgetCheckpoint => {
+                if let Some(p) = self.paired.as_mut() {
+                    let _ = p.replica.forget_expected();
+                }
+                Outcome::Synced(self.sync())
+            }
+            Job::SaveBytes { path, bytes } => Outcome::Saved(
+                std::fs::write(&path, bytes)
+                    .map(|_| path.clone())
+                    .map_err(|e| format!("the file can't be saved ({e})")),
+            ),
             Job::SaveText { path, text } => Outcome::Saved(
                 std::fs::write(&path, text)
                     .map(|_| path.clone())
@@ -294,6 +328,8 @@ impl Worker {
                 .replica
                 .head()
                 .map(|h| (h.seq, p.replica.last_synced().unwrap_or(0))),
+            // still waiting for the pairing checkpoint (a sync says why)
+            checkpoint_failed: p.replica.expected().is_some() && p.replica.head().is_none(),
         }
     }
 
@@ -336,6 +372,7 @@ impl Worker {
             .as_ref()
             .is_some_and(|e| matches!(e, sk_client::CallError::Offline(_)));
         let mut restore = None;
+        let mut checkpoint_failed = false;
         match p.replica.sync(&p.client, now_ms()) {
             Ok(_) => {}
             Err(SyncError::Offline(e)) => {
@@ -343,6 +380,10 @@ impl Worker {
                 problem = Some(e.to_string());
             }
             Err(SyncError::Restored(o)) => restore = Some(o),
+            Err(e @ SyncError::CheckpointNotKept(_)) => {
+                checkpoint_failed = true;
+                problem = Some(e.to_string());
+            }
             Err(e) => problem = Some(e.to_string()),
         }
         let head = p.replica.head().map(|h| h.seq);
@@ -354,6 +395,7 @@ impl Worker {
         };
         let mut s = self.status_only();
         s.restore = restore;
+        s.checkpoint_failed = checkpoint_failed;
         s.records = records;
         s.problem = problem;
         s.offline = offline;
