@@ -596,7 +596,21 @@ fn steps(title: &str, list: &[&str]) -> String {
 
 /// The certificate-install page (helper port `/`): the fingerprint, both download
 /// buttons and the steps for the phone that asked first, then the other.
-pub fn install_page(info: &Info, apple_first: bool) -> String {
+pub fn install_page(info: &Info, apple_first: bool, pair: Option<&str>) -> String {
+    // step 2, when the page was opened from a pairing QR code (the code is 8 letters and
+    // digits; anything else is ignored, never echoed)
+    let pair = pair.filter(|c| c.len() == 8 && c.bytes().all(|b| b.is_ascii_alphanumeric()));
+    let step2 = pair
+        .map(|c| {
+            let shown = format!("{}-{}", &c[..4], &c[4..]);
+            format!(
+                r#"<div class="card"><h2>Step 2: join the household</h2>
+<p>After the certificate is installed, open the household page:</p>
+<a class="button" href="https://{{HOST}}:{{HTTPS_PORT}}/#pair={c}">Open ShareKeep</a>
+<p class="muted">On a computer with the ShareKeep app, type this pairing code instead: <b>{shown}</b>. It works once, for 10 minutes.</p></div>"#
+            )
+        })
+        .unwrap_or_default();
     let android = steps("Android phone or tablet", &ANDROID_STEPS);
     let apple = steps("iPhone or iPad", &APPLE_STEPS);
     let (first, second) = if apple_first {
@@ -634,6 +648,7 @@ ol {{ padding-left:22px; }} li {{ margin:6px 0; }}
 <a class="button" href="{mc}">Download certificate (iPhone or iPad)</a>
 <p class="muted">The certificate is only valid for the hub computer's address ({ip}{name}). It cannot be used for any other website.</p>
 </div>
+{step2}
 <div class="card">{first}</div>
 <div class="card">{second}</div>
 <p class="muted">Already installed? Open <a href="https://{host}:{port}/">https://{host}:{port}/</a>.</p>
@@ -641,6 +656,10 @@ ol {{ padding-left:22px; }} li {{ margin:6px 0; }}
 "#,
         host = xml(&info.name.clone().unwrap_or_else(|| info.address.clone())),
         port = "{HTTPS_PORT}",
+        step2 = step2.replace(
+            "{HOST}",
+            &xml(&info.name.clone().unwrap_or_else(|| info.address.clone()))
+        ),
         ca = xml(&info.ca_name),
         fp = xml(&info.fingerprint),
         crt = CA_CRT_PATH,
@@ -655,8 +674,8 @@ ol {{ padding-left:22px; }} li {{ margin:6px 0; }}
 }
 
 /// The certificate page for a phone, with the HTTPS port filled in.
-pub fn page_for(info: &Info, https_port: u16, user_agent: &str) -> String {
-    install_page(info, is_apple(user_agent)).replace("{HTTPS_PORT}", &https_port.to_string())
+pub fn page_for(info: &Info, https_port: u16, user_agent: &str, pair: Option<&str>) -> String {
+    install_page(info, is_apple(user_agent), pair).replace("{HTTPS_PORT}", &https_port.to_string())
 }
 
 /// Headers of the helper's answers (no scripts at all on these pages).

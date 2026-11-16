@@ -37,6 +37,10 @@ pub struct State {
     pub hub_book: Option<String>,
     pub hub_ledger: Ledger,
     pub hub_pick: BTreeSet<MemberId>,
+    /// The open book's file.
+    pub hub_file: Option<String>,
+    /// Keep the message on the Hub tab through the next status (a recovery key).
+    keep_info: bool,
     seq: u64,
 }
 
@@ -87,6 +91,8 @@ impl State {
             hub_book: None,
             hub_ledger: Ledger::new(),
             hub_pick: BTreeSet::new(),
+            hub_file: None,
+            keep_info: false,
             seq: 0,
         }
     }
@@ -188,56 +194,53 @@ impl State {
         ui.set_hub_error(s(""));
         match then {
             AdminThen::Status => {
-                let books: Vec<BookS> = v["books"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default()
+                let all = v["books"].as_array().cloned().unwrap_or_default();
+                let detail = |b: &Value| {
+                    let mut d = Vec::new();
+                    if b["hyperbook"].as_bool() == Some(true) {
+                        d.push("Hyperbook".to_string());
+                    }
+                    if b["encrypted"].as_bool() == Some(true) {
+                        d.push("encrypted".into());
+                    }
+                    if let Some(h) = b["head"].as_u64() {
+                        d.push(format!("{h} records"));
+                    }
+                    match b["problem"].as_str() {
+                        Some("closed") | None => {}
+                        Some(p) => d.push(p.to_string()),
+                    }
+                    d.join(" · ")
+                };
+                let current = all.iter().find(|b| b["open"] == true);
+                self.hub_book = current.and_then(|b| b["id"].as_str()).map(str::to_string);
+                self.hub_file = current.and_then(|b| b["file"].as_str()).map(str::to_string);
+                ui.set_hub_current_name(s(current.and_then(|b| b["name"].as_str()).unwrap_or("")));
+                ui.set_hub_current_detail(s(current.map(detail).unwrap_or_default()));
+                if current.is_none() {
+                    self.hub_ledger = Ledger::new();
+                    ui.set_hub_code(s(""));
+                }
+                let books: Vec<BookS> = all
                     .iter()
-                    .map(|b| {
-                        let open = b["open"].as_bool().unwrap_or(false);
-                        let mut detail = Vec::new();
-                        if b["hyperbook"].as_bool() == Some(true) {
-                            detail.push("Hyperbook".to_string());
-                        }
-                        if b["encrypted"].as_bool() == Some(true) {
-                            detail.push("encrypted".into());
-                        }
-                        if !open {
-                            detail.push(
-                                b["problem"]
-                                    .as_str()
-                                    .unwrap_or("locked: type its password")
-                                    .to_string(),
-                            );
-                        }
-                        BookS {
-                            file: s(b["file"].as_str().unwrap_or("")),
-                            name: s(b["name"].as_str().unwrap_or("(locked book)")),
-                            detail: s(detail.join(" · ")),
-                            open,
-                        }
+                    .filter(|b| b["open"] != true)
+                    .map(|b| BookS {
+                        file: s(b["file"].as_str().unwrap_or("")),
+                        name: s(b["name"].as_str().or(b["file"].as_str()).unwrap_or("")),
+                        detail: s(detail(b)),
+                        encrypted: b["encrypted"].as_bool().unwrap_or(false),
                     })
                     .collect();
-                let first_open = v["books"]
-                    .as_array()
-                    .and_then(|a| a.iter().find(|b| b["open"] == true))
-                    .and_then(|b| b["id"].as_str())
-                    .map(str::to_string);
-                if self.hub_book.is_none() || first_open.is_none() {
-                    self.hub_book = first_open;
-                }
                 ui.set_hub_books(model(books));
-                let pin = if v["pin_set"] == true {
-                    "PIN set"
-                } else {
-                    "No PIN yet: set one before pairing"
-                };
-                ui.set_hub_info(s(format!(
-                    "Hub at {} · certificate {} · {}",
-                    v["address"].as_str().unwrap_or("?"),
-                    v["fingerprint"].as_str().unwrap_or("?"),
-                    pin
-                )));
+                ui.set_hub_pin_set(v["pin_set"] == true);
+                if !self.keep_info {
+                    ui.set_hub_info(s(format!(
+                        "Hub at {} · certificate {}",
+                        v["address"].as_str().unwrap_or("?"),
+                        v["fingerprint"].as_str().unwrap_or("?"),
+                    )));
+                }
+                self.keep_info = false;
                 if let Some(id) = self.hub_book.clone() {
                     self.send(Job::Admin {
                         method: "GET",
@@ -288,10 +291,15 @@ impl State {
                 ui.set_hub_devices(model(list));
             }
             AdminThen::Code => {
-                let url = v["url"].as_str().unwrap_or("").to_string();
+                // the QR code opens the certificate page first, which links on to the household
+                let url = v["qr"]
+                    .as_str()
+                    .or(v["url"].as_str())
+                    .unwrap_or("")
+                    .to_string();
                 ui.set_hub_code(s(v["code"].as_str().unwrap_or("")));
                 ui.set_hub_code_detail(s(format!(
-                    "Works once, for 10 minutes. Certificate page: {}",
+                    "Works once, for 10 minutes. Without the QR code, a phone opens {} first.",
                     v["certificate_page"].as_str().unwrap_or("")
                 )));
                 ui.set_hub_qr(qr_image(&url));
@@ -309,7 +317,8 @@ impl State {
                 ui.set_new_book_password(s(""));
                 ui.set_new_book_hyperbook(false);
                 ui.set_hub_info(s(msg));
-                self.hub_status_keep_info();
+                self.keep_info = true;
+                self.hub_status();
             }
             AdminThen::Done(_) => {}
         }
@@ -322,18 +331,6 @@ impl State {
                 path: "/admin/v1/status".into(),
                 body: None,
                 then: AdminThen::Status,
-            });
-        }
-    }
-
-    /// Refresh the lists but keep the message on screen (the recovery key).
-    fn hub_status_keep_info(&self) {
-        if let Some(id) = &self.hub_book {
-            self.send(Job::Admin {
-                method: "GET",
-                path: format!("/admin/v1/books/{id}/records"),
-                body: None,
-                then: AdminThen::Records,
             });
         }
     }
@@ -832,6 +829,7 @@ impl State {
                 })
                 .collect(),
         ));
+        ui.set_hub_pick_count(self.hub_pick.len() as i32);
     }
 
     fn admin(&self, method: &'static str, path: String, body: Option<Value>, then: AdminThen) {
@@ -895,6 +893,19 @@ impl State {
             format!("/admin/v1/books/{file}/unlock"),
             Some(json!({ "password": password })),
             AdminThen::Done("The book is open.".into()),
+        );
+    }
+
+    pub fn hub_close_book(&self, ui: &AppWindow) {
+        let Some(file) = self.hub_file.clone() else {
+            return;
+        };
+        ui.set_hub_code(s(""));
+        self.admin(
+            "POST",
+            format!("/admin/v1/books/{file}/close"),
+            None,
+            AdminThen::Done(String::new()),
         );
     }
 

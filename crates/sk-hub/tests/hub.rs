@@ -516,3 +516,106 @@ fn closing_a_period_saves_the_statement_and_seals_it_into_the_hyperbook() {
         422
     );
 }
+
+#[test]
+fn the_hub_works_in_one_book_at_a_time() {
+    let mut h = hub();
+    let (id, file) = household(&h, false, None);
+    // another book can't be made or opened while Home is open
+    let (s, b) = h.admin(
+        "POST",
+        "/admin/v1/books",
+        Some(json!({"name": "Cabin", "hyperbook": false})),
+    );
+    assert_eq!(s, 409, "{b}");
+    assert!(b["error"].as_str().unwrap().contains("Close it first"));
+    let (_, st) = h.admin("GET", "/admin/v1/status", None);
+    assert_eq!(st["current"], "Home");
+    // a pairing code stops working when its book closes
+    let code = pairing_code(&h, &id, 2);
+    let (s, closed) = h.admin("POST", &format!("/admin/v1/books/{file}/close"), None);
+    assert_eq!(s, 200, "{closed}");
+    assert_eq!(closed["open"], false);
+    assert_eq!(
+        closed["name"], "Home",
+        "a closed book keeps its name in the list"
+    );
+    let e = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap_err();
+    assert!(matches!(e, CallError::Http { .. }), "{e:?}");
+    let (_, st) = h.admin("GET", "/admin/v1/status", None);
+    assert!(st["current"].is_null());
+    // now a second book can be made; it becomes the one the hub works in
+    let (s, b) = h.admin(
+        "POST",
+        "/admin/v1/books",
+        Some(json!({"name": "Cabin", "hyperbook": false})),
+    );
+    assert_eq!(s, 201, "{b}");
+    let cabin = b["file"].as_str().unwrap().to_string();
+    // opening Home again needs Cabin closed first
+    let (s, _) = h.admin(
+        "POST",
+        &format!("/admin/v1/books/{file}/unlock"),
+        Some(json!({})),
+    );
+    assert_eq!(s, 409);
+    h.admin("POST", &format!("/admin/v1/books/{cabin}/close"), None);
+    let (s, b) = h.admin(
+        "POST",
+        &format!("/admin/v1/books/{file}/unlock"),
+        Some(json!({})),
+    );
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["open"], true);
+    // after a restart the hub opens the book it was working in, and only that one
+    h.restart();
+    let (_, st) = h.admin("GET", "/admin/v1/status", None);
+    assert_eq!(st["current"], "Home");
+    let open: Vec<&Value> = st["books"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| b["open"] == true)
+        .collect();
+    assert_eq!(open.len(), 1);
+}
+
+#[test]
+fn the_pairing_qr_code_opens_the_certificate_page_with_step_two() {
+    let h = hub();
+    let (id, _) = household(&h, false, None);
+    let (s, b) = h.admin(
+        "POST",
+        "/admin/v1/pairing",
+        Some(json!({"book_id": id, "member": 2})),
+    );
+    assert_eq!(s, 201);
+    let qr = b["qr"].as_str().unwrap();
+    let port = h.r().helper.port();
+    assert!(
+        qr.starts_with(&format!("http://127.0.0.1:{port}/?pair=")),
+        "{qr}"
+    );
+    let path = qr.split_once(&format!(":{port}")).unwrap().1;
+    let (s, page) = raw_http(
+        h.r().helper,
+        "GET",
+        path,
+        None,
+        None,
+        "Mozilla/5.0 (iPhone)",
+    );
+    assert_eq!(s, 200);
+    let page = String::from_utf8(page).unwrap();
+    let code = b["code"].as_str().unwrap();
+    assert!(page.contains("Step 2"));
+    assert!(
+        page.contains(code),
+        "the code is shown for typing into the desktop app"
+    );
+    assert!(page.contains(&format!("/#pair={}", code.replace('-', ""))));
+    // anything that isn't a code is ignored
+    let (_, page) = raw_http(h.r().helper, "GET", "/?pair=<script>", None, None, "x");
+    let page = String::from_utf8(page).unwrap();
+    assert!(!page.contains("Step 2") && !page.contains("<script>"));
+}

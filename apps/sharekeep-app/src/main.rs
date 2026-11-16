@@ -177,6 +177,7 @@ fn wire(ui: &AppWindow) {
     on!(on_hub_unlock, |st, u, file: slint::SharedString| st
         .hub_unlock(u, &file));
     on!(on_hub_add_member, |st, u| st.hub_add_member(u));
+    on!(on_hub_close_book, |st, u| st.hub_close_book(u));
     on!(on_hub_member_picked, |st, u, id: i32| st
         .hub_member_picked(u, id));
     on!(on_hub_new_agreement, |st, u| st.hub_new_agreement(u));

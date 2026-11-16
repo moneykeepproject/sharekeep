@@ -20,7 +20,7 @@ hub computer), Settings.
 | Agreement · Periods | the current period and the five before it | close a period after it ends, save a closed period's statement PDF |
 | Approvals | rule proposals and leaves waiting for me | approve, decline |
 | Settings | who I am, the book, what waits to send, what the hub refused | sync, dismiss refused |
-| Hub | the hub's address and fingerprint, books, people, devices, a pairing code with its QR code | set the PIN, create or unlock a book, add a person, create an agreement (monthly on the 1st), make a code, remove a device |
+| Hub | the book it's working in, the hub's address and fingerprint, people, other books, devices, a pairing code with its QR code | close the book; open another (password if encrypted) or create one, only while none is open; set or change the PIN; add a person, create an agreement (monthly on the 1st), make a code (book open and PIN set), remove a device |
 
 Sheets: New expense (with the live split as it's typed: `Ledger::preview_expense`), Record a
 payment (suggests what settles me up), Propose a rule.
@@ -52,3 +52,17 @@ folder; the app reads `admin.token` there and calls the loopback admin port.
 Only `dialogs.rs` uses `rfd` (a unit test and `cargo xtask guards` check). On macOS it uses
 `rfd::AsyncFileDialog` through `slint::spawn_local`, never the blocking dialog, which crashes
 winit on the Mac (MoneyKeep 0.1.1). Windows and Linux use the blocking dialog.
+
+## One book at a time on the hub
+
+The hub works in one book at a time (the owner's rule, 2026-11-16). Creating or opening a book
+while another is open is refused (409, "Close it first"); `POST /admin/v1/books/<file>/close`
+closes it, its pairing codes stop working and its devices get "locked or unavailable" until it
+opens again. The hub remembers the book it works in (`current_book` in `hub.sqlite`) and opens
+only that one at start (unencrypted; an encrypted one waits for its password). Buttons on the
+Hub tab are enabled only when their action can work.
+
+The pairing QR code opens the certificate page (`http://<address>:15080/?pair=<code>`), whose
+step 2 links to `https://<address>:15443/#pair=<code>` and shows the code for typing into the
+desktop app. (Before, the QR code went straight to port 15443, which a phone can't open until
+the certificate is installed.)

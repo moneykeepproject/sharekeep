@@ -165,20 +165,15 @@ fn main() {
         "Hub at 192.168.1.20 · certificate 3F2A 91C4 0B7E 55D1 A8F0 6C2B 19E4 D7A3 · PIN set"
             .into(),
     );
-    ui.set_hub_books(ModelRc::new(VecModel::from(vec![
-        BookS {
-            file: "home.skbook".into(),
-            name: "Home".into(),
-            detail: "Hyperbook · encrypted".into(),
-            open: true,
-        },
-        BookS {
-            file: "cabin.skbook".into(),
-            name: "(locked book)".into(),
-            detail: "encrypted · locked: type its password".into(),
-            open: false,
-        },
-    ])));
+    ui.set_hub_current_name("Home".into());
+    ui.set_hub_current_detail("Hyperbook · encrypted · 42 records".into());
+    ui.set_hub_pin_set(true);
+    ui.set_hub_books(ModelRc::new(VecModel::from(vec![BookS {
+        file: "cabin.skbook".into(),
+        name: "Cabin".into(),
+        detail: "encrypted".into(),
+        encrypted: true,
+    }])));
     ui.set_hub_devices(ModelRc::new(VecModel::from(vec![
         DeviceS {
             id: 1,
@@ -204,4 +199,11 @@ fn main() {
     st.hub_member_picked(&ui, 2);
     ui.set_hub_info("Home was created. Its recovery key is SKRK-ABCD-EFGH-IJKL-MNOP — write it down and keep it somewhere safe: it is shown only now, and it opens the book if the password is lost.".into());
     shot(&win, w, h * 2, &p("41-hub-long"));
+    // nothing open: the new-book form is available, and pairing waits
+    ui.set_hub_current_name("".into());
+    ui.set_hub_info("".into());
+    ui.set_hub_pin_set(false);
+    ui.set_hub_pin("4829".into());
+    ui.set_new_book_name("Cabin".into());
+    shot(&win, w, h * 2, &p("42-hub-no-book"));
 }

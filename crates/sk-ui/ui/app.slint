@@ -17,7 +17,7 @@ export struct ExampleS { amount: string, rows: [SplitS] }
 export struct WeightS { name: string, value: float, included: bool, locked: bool }
 export struct ChoiceS { id: int, label: string, on: bool }
 export struct DeviceS { id: int, name: string, detail: string, revoked: bool }
-export struct BookS { file: string, name: string, detail: string, open: bool }
+export struct BookS { file: string, name: string, detail: string, encrypted: bool }
 
 // Vertically scrolling page, centred and capped in width for desktops.
 component Page inherits ScrollView {
@@ -214,7 +214,12 @@ export component AppWindow inherits Window {
 
     // the hub computer
     in-out property <string> hub-pin;
+    // closed books (the open one is hub-current-*)
     in property <[BookS]> hub-books;
+    in property <string> hub-current-name;
+    in property <string> hub-current-detail;
+    in property <bool> hub-pin-set;
+    in property <int> hub-pick-count;
     in property <[ChoiceS]> hub-members;
     in property <[ChoiceS]> hub-agreement-members;
     in property <[DeviceS]> hub-devices;
@@ -259,6 +264,7 @@ export component AppWindow inherits Window {
     callback hub-set-pin();
     callback hub-new-book();
     callback hub-unlock(string);
+    callback hub-close-book();
     callback hub-add-member();
     callback hub-member-picked(int);
     callback hub-new-agreement();
@@ -455,51 +461,67 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // 5: the hub computer
+            // 5: the hub computer. It works in one book at a time: close it to open or create
+            // another.
             if root.page == 5: Page {
                 if root.hub-error != "": Banner { text: root.hub-error; warn: true; }
                 if root.hub-info != "": Banner { text: root.hub-info; }
                 Card {
+                    stripe: root.hub-current-name != "" ? Theme.accent : Theme.line;
+                    SectionTitle { text: root.hub-current-name != "" ? "Working in: " + root.hub-current-name : "No book is open"; }
+                    if root.hub-current-name != "": Hint { text: root.hub-current-detail; }
+                    if root.hub-current-name != "": BigButton { text: "Close this book"; primary: false; clicked => { root.hub-close-book(); } }
+                    if root.hub-current-name == "": Hint { text: "Open a book below, or create a new one. The hub serves one book at a time; devices of a closed book wait until it's open again."; }
+                }
+                Card {
                     SectionTitle { text: "Pair a device"; }
-                    Hint { text: "Pick who the device belongs to. On the device, open the certificate page first (step 1), then scan this code or type it (step 2). The code works once, for 10 minutes."; }
-                    ChipStrip { chips: root.hub-members; picked(id) => { root.hub-make-code(id); } }
+                    if root.hub-current-name == "": Hint { text: "Open a book first."; }
+                    if root.hub-current-name != "" && !root.hub-pin-set: Hint { text: "Set the household PIN first (below)."; }
+                    if root.hub-current-name != "" && root.hub-pin-set: Hint { text: "Pick who the device belongs to. A phone scans the QR code: it opens the certificate page, then the household. On a computer, type the address, the code and the PIN into the ShareKeep app. The code works once, for 10 minutes."; }
+                    if root.hub-current-name != "" && root.hub-pin-set: ChipStrip { chips: root.hub-members; picked(id) => { root.hub-make-code(id); } }
                     if root.hub-code != "": VerticalLayout {
                         spacing: 8px;
                         alignment: center;
-                        Image { source: root.hub-qr; width: 200px; height: 200px; image-rendering: pixelated; }
+                        Image { source: root.hub-qr; width: 200px; height: 200px; image-rendering: pixelated; horizontal-alignment: center; }
                         Text { text: root.hub-code; font-size: 28px; font-weight: 700; color: Theme.ink; horizontal-alignment: center; }
                         Hint { text: root.hub-code-detail; horizontal-alignment: center; }
                     }
                 }
                 Card {
                     SectionTitle { text: "Household PIN"; }
-                    Hint { text: "Every device needs it once, when it pairs. 6 to 12 digits."; }
-                    Field { label: "New PIN"; secret: true; text <=> root.hub-pin; }
-                    BigButton { text: "Set the PIN"; primary: false; clicked => { root.hub-set-pin(); } }
+                    Hint { text: root.hub-pin-set ? "Set. Every device needs it once, when it pairs. You can change it; paired devices keep working." : "Every device needs it once, when it pairs. 6 to 12 digits."; }
+                    Field { label: root.hub-pin-set ? "New PIN" : "PIN"; secret: true; number: true; text <=> root.hub-pin; }
+                    BigButton { text: root.hub-pin-set ? "Change the PIN" : "Set the PIN"; primary: false; enabled: root.hub-pin.character-count >= 6 && root.hub-pin.character-count <= 12 && root.hub-pin.is-float(); clicked => { root.hub-set-pin(); } }
                 }
-                Card {
-                    SectionTitle { text: "Books on this hub"; }
+                if root.hub-current-name != "": Card {
+                    SectionTitle { text: "People and agreements in " + root.hub-current-name; }
+                    Field { label: "Add a person"; placeholder: "Sam"; text <=> root.new-member-name; }
+                    BigButton { text: "Add"; primary: false; enabled: root.new-member-name != ""; clicked => { root.hub-add-member(); } }
+                    Field { label: "New agreement"; placeholder: "Apartment"; text <=> root.new-agreement-name; }
+                    if root.hub-agreement-members.length == 0: Hint { text: "Add people first."; }
+                    if root.hub-agreement-members.length > 0: Hint { text: "Who shares in it:"; }
+                    ChipStrip { chips: root.hub-agreement-members; picked(id) => { root.hub-member-picked(id); } }
+                    BigButton { text: "Create the agreement (settles monthly, on the 1st)"; primary: false; enabled: root.new-agreement-name != "" && root.hub-pick-count > 0; clicked => { root.hub-new-agreement(); } }
+                }
+                if root.hub-books.length > 0: Card {
+                    SectionTitle { text: "Other books on this hub"; }
+                    if root.hub-current-name != "": Hint { text: "Close " + root.hub-current-name + " to open one of these."; }
                     for b in root.hub-books: VerticalLayout {
                         spacing: 4px;
                         Text { text: b.name; font-weight: 600; color: Theme.ink; }
                         Hint { text: b.detail; }
-                        if !b.open: Field { label: "Password"; secret: true; text <=> root.unlock-password; }
-                        if !b.open: BigButton { text: "Unlock " + b.file; primary: false; clicked => { root.hub-unlock(b.file); } }
+                        if b.encrypted && root.hub-current-name == "": Field { label: "Password or recovery key"; secret: true; text <=> root.unlock-password; }
+                        BigButton { text: "Open " + b.name; primary: false; enabled: root.hub-current-name == "" && (!b.encrypted || root.unlock-password != ""); clicked => { root.hub-unlock(b.file); } }
                     }
-                    Field { label: "New book"; placeholder: "Home"; text <=> root.new-book-name; }
-                    Switch { text: "Make it a Hyperbook"; checked <=> root.new-book-hyperbook; }
-                    Hint { text: "A Hyperbook keeps every change for good, chained so no one can quietly rewrite the past. It's chosen now and can't be changed later."; }
-                    Field { label: "Password (optional: encrypts the book)"; secret: true; text <=> root.new-book-password; }
-                    BigButton { text: "Create the book"; primary: false; clicked => { root.hub-new-book(); } }
                 }
                 Card {
-                    SectionTitle { text: "People and agreements"; }
-                    Field { label: "Add a person"; placeholder: "Sam"; text <=> root.new-member-name; }
-                    BigButton { text: "Add"; primary: false; clicked => { root.hub-add-member(); } }
-                    Field { label: "New agreement"; placeholder: "Apartment"; text <=> root.new-agreement-name; }
-                    Hint { text: "Who shares in it:"; }
-                    ChipStrip { chips: root.hub-agreement-members; picked(id) => { root.hub-member-picked(id); } }
-                    BigButton { text: "Create the agreement (settles monthly, on the 1st)"; primary: false; clicked => { root.hub-new-agreement(); } }
+                    SectionTitle { text: "New book"; }
+                    if root.hub-current-name != "": Hint { text: "Close " + root.hub-current-name + " first, then create the new book."; }
+                    if root.hub-current-name == "": Field { label: "Name"; placeholder: "Home"; text <=> root.new-book-name; }
+                    if root.hub-current-name == "": Switch { text: "Make it a Hyperbook"; checked <=> root.new-book-hyperbook; }
+                    if root.hub-current-name == "": Hint { text: "A Hyperbook keeps every change for good, chained so no one can quietly rewrite the past. It's chosen now and can't be changed later."; }
+                    if root.hub-current-name == "": Field { label: "Password (optional: encrypts the book)"; secret: true; text <=> root.new-book-password; }
+                    BigButton { text: "Create the book"; primary: false; enabled: root.hub-current-name == "" && root.new-book-name != ""; clicked => { root.hub-new-book(); } }
                 }
                 Card {
                     SectionTitle { text: "Devices"; }

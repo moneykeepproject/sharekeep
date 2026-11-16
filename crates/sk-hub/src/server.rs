@@ -145,8 +145,11 @@ struct Book {
     store: Option<Store>,
     /// The book's state, replayed from its history when it opens.
     ledger: Ledger,
-    /// Why the book isn't open (locked, damaged…).
+    /// Why the book isn't open (closed, locked, damaged…).
     problem: Option<String>,
+    /// Its name, remembered while it's closed (a closed book's file isn't read).
+    name: Option<String>,
+    encrypted: bool,
 }
 
 /// Replay a book's history into its state.
@@ -176,10 +179,20 @@ impl Book {
         Book {
             file,
             path,
+            name: Some(store.info().name.clone()),
+            encrypted: store.info().encrypted,
             store: Some(store),
             ledger,
             problem: None,
         }
+    }
+
+    /// Close the book: its file is released and its devices get "closed" until it's
+    /// opened again.
+    fn close(&mut self) {
+        self.store = None;
+        self.ledger = Ledger::new();
+        self.problem = Some(CLOSED.into());
     }
 
     fn info(&self) -> Option<&BookInfo> {
@@ -191,9 +204,9 @@ impl Book {
         json!({
             "file": self.file,
             "id": info.map(|i| i.book_id.clone()),
-            "name": info.map(|i| i.name.clone()),
+            "name": info.map(|i| i.name.clone()).or_else(|| self.name.clone()),
             "hyperbook": info.map(|i| i.hyperbook),
-            "encrypted": info.map(|i| i.encrypted),
+            "encrypted": info.map(|i| i.encrypted).unwrap_or(self.encrypted),
             "head": self.store.as_ref().and_then(Store::head).map(|h| h.seq),
             "open": self.store.is_some(),
             "problem": self.problem,
@@ -226,6 +239,8 @@ struct Shared {
     kdf: KdfParams,
     admin_token: String,
     https: SocketAddr,
+    /// The certificate page's address (its port may differ from the config in tests).
+    helper: SocketAddr,
     host: String,
     peers: wifi::Peers,
     stopping: Arc<AtomicBool>,
@@ -252,7 +267,14 @@ fn facts(info: &BookInfo) -> BookFacts {
     }
 }
 
-fn load_books(dir: &Path, log: &Log) -> Vec<Book> {
+/// Why a book that isn't the current one is closed.
+const CLOSED: &str = "closed";
+/// The registry key naming the book the hub works in.
+const CURRENT_BOOK: &str = "current_book";
+
+/// The hub's books. Only one is open at a time: `current` (the one last opened), or, on a
+/// hub that never chose, the first unencrypted one. The others are listed, closed.
+fn load_books(dir: &Path, current: Option<&str>, log: &Log) -> Vec<Book> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
@@ -268,15 +290,24 @@ fn load_books(dir: &Path, log: &Log) -> Vec<Book> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let problem = match sk_store::book_kind(&path) {
-            Ok(BookKind::Encrypted) => "locked: enter its password on the hub computer".to_string(),
-            Ok(BookKind::Plain) => match Store::open(&path, None) {
+        let chosen = match current {
+            Some(c) => c == file,
+            None => !out.iter().any(|b: &Book| b.store.is_some()),
+        };
+        let kind = sk_store::book_kind(&path);
+        let encrypted = matches!(kind, Ok(BookKind::Encrypted));
+        let problem = match kind {
+            Ok(BookKind::Encrypted) if chosen => {
+                "locked: enter its password on the hub computer".to_string()
+            }
+            Ok(BookKind::Plain) if chosen => match Store::open(&path, None) {
                 Ok(s) => {
                     out.push(Book::open(file, path, s, log));
                     continue;
                 }
                 Err(e) => e.to_string(),
             },
+            Ok(_) => CLOSED.to_string(),
             Err(e) => e.to_string(),
         };
         out.push(Book {
@@ -285,6 +316,8 @@ fn load_books(dir: &Path, log: &Log) -> Vec<Book> {
             store: None,
             ledger: Ledger::new(),
             problem: Some(problem),
+            name: None,
+            encrypted,
         });
     }
     out
@@ -383,7 +416,8 @@ pub fn start(opts: HubOptions) -> StoreResult<Running> {
     let resolver = Arc::new(wifi::Resolver::new(&material)?);
     let tls = wifi::server_config(resolver.clone())?;
     let registry = Registry::open(&opts.data)?;
-    let books = load_books(&opts.data.join(BOOKS_DIR), &opts.log);
+    let current = registry.get(CURRENT_BOOK)?;
+    let books = load_books(&opts.data.join(BOOKS_DIR), current.as_deref(), &opts.log);
     let admin_token = admin_token(&opts.data)?;
     let stopping = Arc::new(AtomicBool::new(false));
     let peers: wifi::Peers = Arc::new(Mutex::new(HashMap::new()));
@@ -415,6 +449,7 @@ pub fn start(opts: HubOptions) -> StoreResult<Running> {
         kdf: opts.kdf,
         admin_token,
         https,
+        helper: helper_addr,
         peers: peers.clone(),
         stopping: stopping.clone(),
     });
@@ -553,6 +588,14 @@ fn store_status(e: &StoreError) -> u16 {
 }
 
 /// The open book with `id`, or why it can't be used.
+/// The open book's name, if one is open.
+fn open_name(st: &State) -> Option<String> {
+    st.books
+        .iter()
+        .find(|b| b.store.is_some())
+        .map(|b| b.name.clone().unwrap_or_else(|| b.file.clone()))
+}
+
 fn book_by_id<'a>(state: &'a mut State, id: &str) -> Result<&'a mut Store, (u16, &'static str)> {
     open_book(state, id)?
         .store
@@ -906,6 +949,11 @@ fn pair(shared: &Shared, p: &PairRequest) -> Result<PairAnswer, (u16, String)> {
 
 fn handle_helper(shared: &Shared, req: Request) {
     let path = req.url().split('?').next().unwrap_or("").to_string();
+    let pair = req
+        .url()
+        .split_once('?')
+        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("pair=")))
+        .map(str::to_string);
     let ua = req
         .headers()
         .iter()
@@ -919,7 +967,7 @@ fn handle_helper(shared: &Shared, req: Request) {
             "/" => (
                 200,
                 "text/html; charset=utf-8",
-                wifi::page_for(&info, shared.https.port(), &ua).into_bytes(),
+                wifi::page_for(&info, shared.https.port(), &ua, pair.as_deref()).into_bytes(),
                 None,
             ),
             wifi::CA_CRT_PATH => (
@@ -1089,6 +1137,7 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
                     "ca_name": info.ca_name,
                     "fingerprint": info.fingerprint,
                     "pin_set": pin_set,
+                    "current": open_name(&shared.lock()),
                     "devices": devices,
                     "books": books,
                 }),
@@ -1108,6 +1157,14 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
         }
         ("POST", ["books"]) => {
             let b = body!(NewBookRequest);
+            if let Some(name) = open_name(&shared.lock()) {
+                return fail(
+                    shared,
+                    req,
+                    409,
+                    &format!("{name} is open. Close it first, then create the new book."),
+                );
+            }
             let code = b.currency.unwrap_or_else(|| "USD".into());
             let Some(currency) = Currency::ALL.into_iter().find(|c| c.code() == code) else {
                 return fail(shared, req, 400, &format!("Unknown currency {code}."));
@@ -1140,8 +1197,14 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
                         "book": facts(c.store.info()),
                         "recovery_key": c.recovery_key,
                     });
-                    let book = Book::open(file, c.path, c.store, &shared.log);
-                    shared.lock().books.push(book);
+                    let book = Book::open(file.clone(), c.path, c.store, &shared.log);
+                    let mut st = shared.lock();
+                    st.books.push(book);
+                    let saved = st.registry.set(CURRENT_BOOK, &file);
+                    drop(st);
+                    if let Err(e) = saved {
+                        (shared.log)(&e);
+                    }
                     send(shared, req, 201, &answer)
                 }
                 Err(e) => fail(shared, req, store_status(&e), &e.to_string()),
@@ -1149,12 +1212,27 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
         }
         ("POST", ["books", file, "unlock"]) => {
             let b = body!(UnlockRequest);
-            let secret = match (b.password, b.recovery_key) {
-                (Some(p), _) => Secret::Password(p),
-                (None, Some(r)) => Secret::RecoveryKey(r),
-                _ => return fail(shared, req, 400, "Give the password or the recovery key."),
+            // an unencrypted book opens without a secret
+            let secret = match (b.password.filter(|p| !p.is_empty()), b.recovery_key) {
+                (Some(p), _) => Some(Secret::Password(p)),
+                (None, Some(r)) => Some(Secret::RecoveryKey(r)),
+                _ => None,
             };
             let mut st = shared.lock();
+            let other = st
+                .books
+                .iter()
+                .find(|bk| bk.store.is_some() && bk.file != *file)
+                .map(|bk| bk.name.clone().unwrap_or_else(|| bk.file.clone()));
+            if let Some(name) = other {
+                drop(st);
+                return fail(
+                    shared,
+                    req,
+                    409,
+                    &format!("{name} is open. Close it first, then open this book."),
+                );
+            }
             let Some(book) = st.books.iter_mut().find(|bk| bk.file == *file) else {
                 drop(st);
                 return fail(shared, req, 404, "No such book on the hub.");
@@ -1164,13 +1242,23 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
                 drop(st);
                 return send(shared, req, 200, &s);
             }
-            match Store::open(&book.path, Some(&secret)) {
+            if book.encrypted && secret.is_none() {
+                drop(st);
+                return fail(shared, req, 400, "Give the password or the recovery key.");
+            }
+            match Store::open(&book.path, secret.as_ref()) {
                 Ok(s) => {
                     book.ledger = replay(&s, &shared.log);
+                    book.name = Some(s.info().name.clone());
+                    book.encrypted = s.info().encrypted;
                     book.store = Some(s);
                     book.problem = None;
                     let s = book.summary();
+                    let saved = st.registry.set(CURRENT_BOOK, file);
                     drop(st);
+                    if let Err(e) = saved {
+                        (shared.log)(&e);
+                    }
                     send(shared, req, 200, &s)
                 }
                 Err(e) => {
@@ -1178,6 +1266,26 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
                     fail(shared, req, store_status(&e), &e.to_string())
                 }
             }
+        }
+        ("POST", ["books", file, "close"]) => {
+            let mut st = shared.lock();
+            let Some(book) = st.books.iter_mut().find(|bk| bk.file == *file) else {
+                drop(st);
+                return fail(shared, req, 404, "No such book on the hub.");
+            };
+            let id = book.info().map(|i| i.book_id.clone());
+            book.close();
+            let s = book.summary();
+            // its pairing codes stop working; its devices wait until it's opened again
+            if let Some(id) = id {
+                st.codes.retain(|_, p| p.book_id != id);
+            }
+            let saved = st.registry.set(CURRENT_BOOK, "");
+            drop(st);
+            if let Err(e) = saved {
+                (shared.log)(&e);
+            }
+            send(shared, req, 200, &s)
         }
         ("POST", ["books", id, "records"]) => {
             let b = body!(AdminRecord);
@@ -1312,7 +1420,9 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
                     "code": shown,
                     "expires": expires,
                     "url": format!("https://{}:{}/#pair={code}", shared.host, shared.https.port()),
-                    "certificate_page": format!("http://{}:{}/", shared.cfg.address, shared.cfg.helper_port),
+                    // the QR code: the certificate page first, which then links to the url
+                    "qr": format!("http://{}:{}/?pair={code}", shared.cfg.address, shared.helper.port()),
+                    "certificate_page": format!("http://{}:{}/", shared.cfg.address, shared.helper.port()),
                 }),
             )
         }
