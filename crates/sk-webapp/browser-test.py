@@ -72,6 +72,12 @@ try:
         pg.wait_for_selector('text=Step 3 of 3')
         pg.fill('label:has-text("Device name") input', "Sam's phone")
         pg.click('text=Join the household')
+        # a Hyperbook: the optional first checkpoint is offered
+        pg.wait_for_selector('.sheet >> text=Optional: a first checkpoint')
+        cp = pg.text_content('.sheet .mono')
+        assert cp.startswith('ShareKeep checkpoint · Home · record '), cp
+        pg.screenshot(path=f'{out}/01b-checkpoint.png')
+        pg.click('.sheet button.link:has-text("Close")')
         pg.wait_for_selector('text=Apartment')
         pg.screenshot(path=f'{out}/02-home.png')
         pg.click('h2:has-text("Apartment")')
@@ -103,7 +109,32 @@ try:
         pg.click('#nav >> text=Approvals')
         pg.screenshot(path=f'{out}/08-approvals.png')
         pg.click('#nav >> text=Settings')
-        pg.screenshot(path=f'{out}/09-settings.png')
+        pg.screenshot(path=f'{out}/09-settings.png', full_page=True)
+        # Verify answers both questions
+        pg.click('text=Verify the book')
+        pg.wait_for_selector('.sheet >> text=Has the history been changed?')
+        assert pg.locator('.sheet .banner.warn').count() == 0
+        pg.screenshot(path=f'{out}/09b-verify.png')
+        pg.click('.sheet button.link:has-text("Close")')
+        # the first checkpoint is still in the history
+        pg.click('text=Check a checkpoint')
+        pg.fill('.sheet textarea', cp)
+        pg.click('.sheet button.btn:has-text("Check")')
+        pg.wait_for_selector('.sheet >> text=unchanged, and everything before it')
+        pg.fill('.sheet textarea', cp[:-1] + ('0' if cp[-1] != '0' else '1'))
+        pg.click('.sheet button.btn:has-text("Check")')
+        pg.wait_for_selector('.sheet >> text=the history was changed')
+        pg.click('.sheet button.link:has-text("Close")')
+        # a period exports as a spreadsheet
+        pg.click('#nav >> text=Home')
+        pg.click('h2:has-text("Apartment")')
+        pg.click('#tabs >> text=Periods')
+        with pg.expect_download() as dl:
+            pg.locator('text=Export to a spreadsheet (CSV)').first.click()
+        csv = open(dl.value.path(), encoding='utf-8').read()
+        assert csv.startswith('Date,Record,What'), csv[:80]
+        assert '83.47' in csv and '# History at export: record ' in csv, csv
+        print('csv lines', len(csv.splitlines()))
         # a recurring bill: added under Rules, due today, recorded from Activity
         pg.click('#nav >> text=Home')
         pg.click('h2:has-text("Apartment")')

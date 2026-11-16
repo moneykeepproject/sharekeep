@@ -39,6 +39,32 @@ pub fn save_file(
     }
 }
 
+/// Ask for a file to open, then call `then` with it (`None`: cancelled).
+pub fn open_file(
+    window: &slint::Window,
+    title: &str,
+    filter: (&str, &[&str]),
+    then: impl FnOnce(Option<PathBuf>) + 'static,
+) {
+    let _ = window;
+    if cfg!(target_os = "macos") {
+        let fut = rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter(filter.0, filter.1)
+            .pick_file();
+        let _ = slint::spawn_local(async move {
+            then(fut.await.map(|f| f.path().to_path_buf()));
+        });
+    } else {
+        then(
+            rfd::FileDialog::new()
+                .set_title(title)
+                .add_filter(filter.0, filter.1)
+                .pick_file(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// Only this file may open a file dialog: anything else would bring back the Mac crash.

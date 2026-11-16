@@ -10,6 +10,7 @@
 //! Older records that no longer pass (made before a check existed) are skipped on replay
 //! and listed, never fatal: a book always opens.
 
+pub mod audit;
 pub mod bodies;
 pub mod statement;
 
@@ -253,6 +254,38 @@ pub struct Ledger {
     /// Interest on held deposits, basis points a year.
     pub interest_bp: u32,
     pub grace_days: u16,
+    /// Period seals (Hyperbooks): which statement was sealed at which head.
+    pub seals: Vec<Seal>,
+    /// Backups the household restored after a broken Hyperbook, and who accepted each.
+    pub restores: Vec<Restore>,
+}
+
+/// A `restore` record: the hub carried on from a backup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restore {
+    pub seq: u64,
+    pub date: NaiveDate,
+    pub backup: String,
+    /// The backup's last record: the history continues from there.
+    pub to_seq: u64,
+    pub to_hash: String,
+    /// Where the broken book was broken.
+    pub broken_at: Option<u64>,
+    /// Members who accepted carrying on from the backup.
+    pub accepted: BTreeSet<MemberId>,
+}
+
+/// A `seal` record: a closed period's statement fingerprint and the head at closing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Seal {
+    /// The seal record itself.
+    pub seq: u64,
+    pub agreement: AgreementId,
+    pub first: NaiveDate,
+    pub last: NaiveDate,
+    pub head_seq: u64,
+    pub head_hash: String,
+    pub statement_sha256: Option<String>,
 }
 
 /// What applying a record produced beyond the state.
@@ -356,7 +389,31 @@ impl Ledger {
         let today = day_of(r.ts);
         let mut effects = Effects::default();
         match r.kind.as_str() {
-            sk_chain::GENESIS | sk_chain::SEAL => {}
+            sk_chain::GENESIS => {}
+            sk_chain::SEAL => {
+                let b = &r.body;
+                let date = |v: &Value| {
+                    v.as_str()
+                        .and_then(|t| NaiveDate::parse_from_str(t, "%Y-%m-%d").ok())
+                };
+                if let (Some(a), Some(first), Some(last), Some(seq), Some(hash)) = (
+                    b["agreement"].as_u64(),
+                    date(&b["period"]["first"]),
+                    date(&b["period"]["last"]),
+                    b["head"]["seq"].as_u64(),
+                    b["head"]["hash"].as_str(),
+                ) {
+                    self.seals.push(Seal {
+                        seq: r.seq,
+                        agreement: AgreementId(a as u32),
+                        first,
+                        last,
+                        head_seq: seq,
+                        head_hash: hash.to_string(),
+                        statement_sha256: b["statement_sha256"].as_str().map(str::to_string),
+                    });
+                }
+            }
             "setting" => {
                 let s: Setting = parse(&r.body)?;
                 match s.key.as_str() {
@@ -594,6 +651,39 @@ impl Ledger {
                 let b: RecurringBody = parse(&r.body)?;
                 self.recurring(author, today, b)?;
             }
+            "restore" => {
+                if author.is_some() {
+                    return Err(no("A restore is made by the hub computer."));
+                }
+                let b = &r.body;
+                let to_seq = b["restored_to"]["seq"]
+                    .as_u64()
+                    .ok_or_else(|| no("A restore names the record it continues from."))?;
+                if to_seq + 1 != r.seq {
+                    return Err(no("A restore comes right after the backup's last record."));
+                }
+                self.restores.push(Restore {
+                    seq: r.seq,
+                    date: today,
+                    backup: b["backup"].as_str().unwrap_or("").to_string(),
+                    to_seq,
+                    to_hash: b["restored_to"]["hash"].as_str().unwrap_or("").to_string(),
+                    broken_at: b["broken_at"].as_u64(),
+                    accepted: BTreeSet::new(),
+                });
+            }
+            "restore-accept" => {
+                let m = author.ok_or_else(|| no("A member accepts a restore."))?;
+                let target = r.body["restore"]
+                    .as_u64()
+                    .ok_or_else(|| no("Say which restore is accepted."))?;
+                let rs = self
+                    .restores
+                    .iter_mut()
+                    .find(|x| x.seq == target)
+                    .ok_or_else(|| no("There's no such restore."))?;
+                rs.accepted.insert(m);
+            }
             "payment" => {
                 let p: Payment = parse(&r.body)?;
                 check_amount(p.amount)?;
@@ -687,7 +777,7 @@ impl Ledger {
             "period-close" => {
                 let b: PeriodClose = parse(&r.body)?;
                 self.author_in(b.agreement, author, today)?;
-                effects.statement = Some(self.close(r.seq, b, today)?);
+                effects.statement = Some(self.close(r.seq, &r.hash.to_hex(), b, today)?);
             }
             other => return Err(no(format!("ShareKeep doesn't know \"{other}\" records."))),
         }
@@ -1089,7 +1179,7 @@ impl Ledger {
         !e.deleted && !(e.disputed && self.dispute_mode == DisputeMode::HeldAside)
     }
 
-    pub(crate) fn balances_until(&self, a: AgreementId, until: Option<NaiveDate>) -> Balances {
+    pub fn balances_until(&self, a: AgreementId, until: Option<NaiveDate>) -> Balances {
         let mut b = Balances::new();
         for e in self.entries.values() {
             if e.agreement != a || !self.counts(e) || until.is_some_and(|u| e.date > u) {
@@ -1114,7 +1204,13 @@ impl Ledger {
         b
     }
 
-    fn close(&mut self, seq: u64, b: PeriodClose, today: NaiveDate) -> Result<Statement, Reject> {
+    fn close(
+        &mut self,
+        seq: u64,
+        hash: &str,
+        b: PeriodClose,
+        today: NaiveDate,
+    ) -> Result<Statement, Reject> {
         let ag = self
             .agreements
             .get(&b.agreement)
@@ -1174,7 +1270,13 @@ impl Ledger {
             seq,
             adjustments,
         });
-        Ok(statement::build(self, b.agreement, span, seq))
+        Ok(statement::build(
+            self,
+            b.agreement,
+            span,
+            seq,
+            hash.to_string(),
+        ))
     }
 
     fn recurring(

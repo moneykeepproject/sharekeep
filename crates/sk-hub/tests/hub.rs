@@ -761,3 +761,152 @@ fn the_preview_asks_for_days_when_the_rule_divides_by_them() {
     assert_eq!(p["rows"][0]["amount"], "$75.00");
     assert!(p["error"].is_null());
 }
+
+#[test]
+fn a_broken_hyperbook_is_restored_from_a_backup_and_devices_accept_it() {
+    let mut h = hub();
+    let (book, file) = household(&h, true, None);
+    let code = pairing_code(&h, &book, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    // the next day: the day's first change makes that day's backup
+    h.advance_minutes(24 * 60);
+    for i in 0..3 {
+        sam.submit_now("expense", &expense(100 + i, 2)).unwrap();
+    }
+    let backups: Vec<_> = std::fs::read_dir(h.data.join("backups"))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(backups.len(), 2, "one backup a day");
+    let dir = tempfile::tempdir().unwrap();
+    let mut replica = Replica::open(dir.path()).unwrap();
+    replica.sync(&sam, 1).unwrap();
+    let seen = replica.head().unwrap();
+
+    // someone edits the last record in the file: the Hyperbook no longer opens
+    h.running.take().unwrap().stop();
+    let path = h.data.join("books").join(&file);
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(&format!(
+            "DROP TRIGGER records_no_update; UPDATE records SET body = replace(body, '102', '902') WHERE seq = {};",
+            seen.seq
+        ))
+        .unwrap();
+    }
+    h.running = Some(sk_hub::start(options(&h.data, &h.clock)).unwrap());
+    let (s, b) = h.admin("GET", "/admin/v1/status", None);
+    assert_eq!(s, 200);
+    let listed = b["books"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["file"] == file.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(listed["broken"], seen.seq);
+
+    // the recovery screen lists both backups, newest first, both fine
+    let (s, rec) = h.admin(
+        "POST",
+        &format!("/admin/v1/books/{file}/recovery"),
+        Some(json!({})),
+    );
+    assert_eq!(s, 200, "{rec}");
+    let list = rec["backups"].as_array().unwrap();
+    assert_eq!(list.len(), 2);
+    assert!(list.iter().all(|x| x["status"] == "ok"));
+    let newest = list[0]["file"].as_str().unwrap().to_string();
+    let backup_head = list[0]["head"]["seq"].as_u64().unwrap();
+    assert!(backup_head < seen.seq);
+
+    // what restoring it would lose
+    let (s, lost) = h.admin(
+        "POST",
+        &format!("/admin/v1/books/{file}/lost"),
+        Some(json!({"backup": newest})),
+    );
+    assert_eq!(s, 200, "{lost}");
+    assert_eq!(
+        lost["records"].as_array().unwrap().len() as u64,
+        seen.seq - backup_head
+    );
+
+    // the broken history can be exported as it is
+    let (s, ex) = h.admin(
+        "POST",
+        &format!("/admin/v1/books/{file}/export-broken"),
+        Some(json!({})),
+    );
+    assert_eq!(s, 200);
+    assert_eq!(ex["broken_at"], seen.seq);
+    assert!(ex["text"].as_str().unwrap().contains("902"));
+
+    // restore
+    let (s, done) = h.admin(
+        "POST",
+        &format!("/admin/v1/books/{file}/restore"),
+        Some(json!({"backup": newest})),
+    );
+    assert_eq!(s, 201, "{done}");
+    assert!(!path.exists(), "the broken file is set aside");
+    assert!(done["set_aside"]
+        .as_str()
+        .unwrap()
+        .ends_with(".sharekeep-broken"));
+    assert!(h
+        .data
+        .join("books")
+        .join(done["set_aside"].as_str().unwrap())
+        .exists());
+
+    // the device sees the restore, keeps its copy until it accepts, then carries on
+    let sam = Client::new(h.address(), sam.token().unwrap());
+    let offer = match replica.sync(&sam, 2) {
+        Err(SyncError::Restored(o)) => o,
+        other => panic!("expected a restore offer, got {other:?}"),
+    };
+    assert_eq!(offer.to_seq, backup_head);
+    assert_eq!(
+        (offer.lost_from, offer.lost_to),
+        (backup_head + 1, seen.seq)
+    );
+    assert!(offer.text().contains("not in it"));
+    assert_eq!(replica.head(), Some(seen));
+    replica.accept_restore(&sam, &offer, 3).unwrap();
+    assert_eq!(replica.head().unwrap().seq, offer.seq);
+    sam.submit_now("restore-accept", &json!({"restore": offer.seq}))
+        .unwrap();
+    replica.sync(&sam, 4).unwrap();
+    // and the book takes new records again
+    sam.submit_now("expense", &expense(500, 2)).unwrap();
+    replica.sync(&sam, 5).unwrap();
+    assert_eq!(replica.head().unwrap().seq, offer.seq + 2);
+}
+
+#[test]
+fn the_web_app_can_verify_the_book_and_export_a_period() {
+    let h = hub();
+    let (book, _) = household(&h, true, None);
+    let code = pairing_code(&h, &book, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    sam.submit_now("expense", &expense(1001, 2)).unwrap();
+    let token = sam.token().unwrap();
+    let (s, b) = https(&h, "GET", "/api/v1/verify", Some(token), None);
+    assert_eq!(s, 200);
+    let v: Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["history"]["ok"], true);
+    assert_eq!(v["numbers"]["ok"], true, "{v}");
+    let (s, b) = https(&h, "GET", "/api/v1/csv/1/2026-11-01", Some(token), None);
+    assert_eq!(s, 200);
+    let v: Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["file"], "Home 2026-11-01 to 2026-11-30.csv");
+    let text = v["text"].as_str().unwrap();
+    // an odd cent: split 5.01 / 5.00, never a fraction
+    assert!(text.contains(",10.01,"), "{text}");
+    assert!(text.contains("# History at export: record "));
+    assert_eq!(
+        https(&h, "GET", "/api/v1/csv/1/nope", Some(token), None).0,
+        404
+    );
+}

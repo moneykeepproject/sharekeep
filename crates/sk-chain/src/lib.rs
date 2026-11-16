@@ -11,6 +11,8 @@
 //! check that the hub's chain still extends it ([`extends`]); that is what catches a
 //! rewrite.
 
+pub mod checkpoint;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

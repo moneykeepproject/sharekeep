@@ -95,6 +95,11 @@ const S = {
   problem: '',
   busy: false,
   pairCode: null,
+  // Hyperbooks: the last record this device saw ({seq, hash, date}), a restore waiting to be
+  // accepted, and whether the hub's history no longer contains what this device saw
+  seen: store.get('seen', null),
+  restoreOffer: null,
+  rewritten: false,
 };
 
 function saveQueue() {
@@ -156,6 +161,7 @@ async function sync() {
   try {
     await flush();
     const v = await api('GET', '/api/v1/view');
+    await checkHistory(v);
     S.view = v;
     store.set('view', v);
     S.offline = false;
@@ -172,8 +178,74 @@ async function sync() {
   }
 }
 
+function isHyperbook() { return !!(S.book && S.book.hyperbook); }
+
+/**
+ * Hyperbooks: the hub must still have the record this device saw last, unchanged. If it
+ * doesn't, either the household restored a backup (an offer to accept) or the history was
+ * rewritten (a warning). Otherwise remember the new head.
+ */
+async function checkHistory(v) {
+  if (!isHyperbook() || !v.head) return;
+  const seen = S.seen;
+  let same = true;
+  if (seen) {
+    if (v.head.seq === seen.seq) same = v.head.hash === seen.hash;
+    else if (v.head.seq < seen.seq) same = false;
+    else {
+      const page = await api('GET', '/api/v1/records?from=' + seen.seq + '&limit=1');
+      same = !!(page.records[0] && page.records[0].seq === seen.seq && page.records[0].hash === seen.hash);
+    }
+  }
+  if (same) {
+    S.restoreOffer = null;
+    S.rewritten = false;
+    S.seen = { seq: v.head.seq, hash: v.head.hash, date: v.today };
+    store.set('seen', S.seen);
+    return;
+  }
+  const r = (v.restores || []).filter((x) => x.to_seq < seen.seq).pop();
+  if (r && !r.accepted_by_me) {
+    S.restoreOffer = { seq: r.seq, date: r.date, to_seq: r.to_seq, lost_from: r.to_seq + 1, lost_to: seen.seq };
+    S.rewritten = false;
+  } else if (r) {
+    // accepted on this member's other device: carry on
+    S.restoreOffer = null;
+    S.seen = { seq: v.head.seq, hash: v.head.hash, date: v.today };
+    store.set('seen', S.seen);
+  } else {
+    S.rewritten = true;
+  }
+}
+
+function restoreText(o) {
+  const lost = o.lost_from === o.lost_to ? 'record ' + o.lost_from + ' is' : 'records ' + o.lost_from + ' to ' + o.lost_to + ' are';
+  return 'The household restored a backup on ' + o.date + '. The book carries on from record ' + o.to_seq + '; ' + lost
+    + ' not in it and will need to be entered again. Accept to carry on from the backup; until then this device makes no changes.';
+}
+
+async function acceptRestore() {
+  const o = S.restoreOffer;
+  if (!o) return;
+  try {
+    await api('POST', '/api/v1/records', { client_id: randomId(), kind: 'restore-accept', body: { restore: o.seq } });
+    S.restoreOffer = null;
+    S.seen = null;
+    store.del('seen');
+    await sync();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function blocked() {
+  if (S.restoreOffer) { toast('Accept the restored backup first (the banner at the top).'); return true; }
+  return false;
+}
+
 /** Queue something that may wait offline (expense, payment, approval), then send it. */
 function queue(kind, body) {
+  if (blocked()) return Promise.resolve();
   S.outbox.push({ client_id: randomId(), kind, body });
   saveQueue();
   return sync();
@@ -181,6 +253,7 @@ function queue(kind, body) {
 
 /** Send something that needs the hub now (a rule proposal, a dispute, a delete, a close). */
 async function sendNow(kind, body) {
+  if (blocked()) return false;
   try {
     await api('POST', '/api/v1/records', { client_id: randomId(), kind, body });
     await sync();
@@ -218,14 +291,19 @@ async function pair(code, pin, device) {
     store.set('device', device);
     saveQueue();
     S.page = 'home';
+    S.seen = null;
+    store.del('seen');
     await sync();
+    // EZ Start's last, optional step for a Hyperbook: a checkpoint kept outside the house
+    if (isHyperbook() && S.view) checkpointSheet('Optional: a first checkpoint');
   } catch (e) {
     toast(e.message);
   }
 }
 
 function forget() {
-  for (const k of ['token', 'member', 'book', 'view', 'outbox', 'refused']) store.del(k);
+  for (const k of ['token', 'member', 'book', 'view', 'outbox', 'refused', 'seen']) store.del(k);
+  S.seen = null;
   Object.assign(S, { token: null, member: null, book: null, view: null, outbox: [], refused: [], page: 'home' });
   render();
 }
@@ -272,6 +350,14 @@ function render() {
 
 function status() {
   const out = [];
+  if (S.restoreOffer) {
+    out.push(h('div', { class: 'banner warn' }, restoreText(S.restoreOffer),
+      h('div', { class: 'row end' }, h('button', { class: 'btn', onclick: acceptRestore }, 'Accept'))));
+  }
+  if (S.rewritten) {
+    out.push(h('div', { class: 'banner warn' }, 'Warning: the hub\'s history was changed since this device last saw record '
+      + S.seen.seq + '. Nothing here was changed. Ask the household what happened; Settings > Verify checks the book.'));
+  }
   if (S.problem) {
     out.push(h('div', { class: 'banner warn' }, S.offline
       ? "Offline: the household hub can't be reached. New expenses, payments and approvals wait here and are sent when you're home."
@@ -453,8 +539,13 @@ function agreementPage(a) {
 function periodCards(a) {
   return a.periods.map((p) => h('div', { class: 'card ' + (p.closed ? '' : p.can_close ? 'warn' : 'info') },
     h('h2', {}, p.label), h('p', { class: 'hint' }, p.state),
-    p.can_close ? h('button', { class: 'btn', onclick: () => sendNow('period-close', { agreement: a.id, date: p.first }) }, 'Close this period') : null,
-    p.closed ? h('button', { class: 'btn secondary', onclick: () => statement(a, p.first) }, 'Save the statement (PDF)') : null));
+    p.can_close ? h('button', { class: 'btn', onclick: async () => {
+      if (await sendNow('period-close', { agreement: a.id, date: p.first }) && isHyperbook()) {
+        checkpointSheet('Period closed: save a checkpoint?');
+      }
+    } }, 'Close this period') : null,
+    p.closed ? h('button', { class: 'btn secondary', onclick: () => statement(a, p.first) }, 'Save the statement (PDF)') : null,
+    h('button', { class: 'link', onclick: () => exportCsv(a, p.first) }, 'Export to a spreadsheet (CSV)')));
 }
 
 function scheduleSheet(a) {
@@ -551,6 +642,12 @@ function settingsPage() {
     S.refused.length ? h('div', { class: 'card owes' }, h('h2', {}, 'Not accepted by the hub'),
       S.refused.map((r) => h('div', {}, r.kind + ': ' + r.reason)),
       h('button', { class: 'link', onclick: () => { S.refused = []; saveQueue(); render(); } }, 'Dismiss')) : null,
+    hyperbookCard(),
+    h('div', { class: 'card' }, h('h2', {}, 'Verify'),
+      h('p', { class: 'hint' }, isHyperbook()
+        ? 'Two questions, answered from the whole history: has it been changed, and do the numbers add up?'
+        : 'Do the numbers add up? Every record is replayed under the book\'s rules.'),
+      h('button', { class: 'btn secondary', onclick: verify }, 'Verify the book')),
     h('div', { class: 'card' }, h('h2', {}, 'Install'),
       h('p', { class: 'hint' }, 'Add ShareKeep to the home screen: on an iPhone, Share > Add to Home Screen; on Android or a PC, the browser\'s Install app menu item.')),
     h('div', { class: 'card' }, h('h2', {}, 'Leave'),
@@ -558,6 +655,143 @@ function settingsPage() {
       h('button', { class: 'btn danger', onclick: () => { if (S.armed === 'forget') { forget(); } else { S.armed = 'forget'; toast('Tap again to forget this device.'); } } }, 'Forget this device')),
     h('p', { class: 'hint' }, 'ShareKeep, part of the MoneyKeep family. MIT OR Apache-2.0.'),
   ];
+}
+
+function hyperbookCard() {
+  if (!isHyperbook()) return null;
+  const v = S.view;
+  const head = v && v.head;
+  const seen = S.seen;
+  let stale = null;
+  if (seen && seen.date && v) {
+    const days = Math.round((Date.parse(v.today) - Date.parse(seen.date)) / 86400000);
+    if (days > 30) stale = h('p', { class: 'hint' }, 'It has been ' + days + ' days since this device last checked the history.');
+  }
+  return h('div', { class: 'card' }, h('h2', {}, 'Hyperbook'),
+    head ? kv('History', 'record ' + head.seq) : null,
+    head ? h('p', { class: 'hint mono' }, head.hash) : null,
+    seen ? h('p', { class: 'hint' }, 'This device last saw record ' + seen.seq + ' on ' + seen.date + '.') : null,
+    stale,
+    h('div', { class: 'row' },
+      h('button', { class: 'btn secondary', onclick: () => checkpointSheet('Save a checkpoint') }, 'Save a checkpoint'),
+      h('button', { class: 'btn secondary', onclick: checkCheckpointSheet }, 'Check a checkpoint')),
+    h('button', { class: 'btn secondary', onclick: checkStatementSheet }, 'Check a statement'));
+}
+
+function checkpointText() {
+  const v = S.view;
+  const book = String((S.book && S.book.name) || 'Book').replace(/[·\u0000-\u001f]/g, ' ').trim();
+  return 'ShareKeep checkpoint · ' + book + ' · record ' + v.head.seq + ' · ' + v.today + ' · ' + v.head.hash;
+}
+
+function saveText(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const link = h('a', { href: url, download: name });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+function checkpointSheet(title) {
+  if (!S.view || !S.view.head) return toast('Sync first.');
+  const text = checkpointText();
+  openSheet(title, (body) => {
+    body.append(
+      h('p', { class: 'hint' }, 'Keep this line somewhere outside the house: print it, email it to yourself, or give it to a relative. Later, Check a checkpoint shows whether the history still contains it, unchanged.'),
+      h('p', { class: 'mono box' }, text),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn', onclick: async () => {
+          try { await navigator.clipboard.writeText(text); toast('Copied.'); } catch { toast('Select the line and copy it.'); }
+        } }, 'Copy'),
+        h('button', { class: 'btn secondary', onclick: () => saveText('ShareKeep checkpoint record ' + S.view.head.seq + '.txt', text + '\r\n', 'text/plain') }, 'Save as a file')));
+  });
+}
+
+/** The head in a checkpoint's text, forgiving about spacing and case (as the desktop app). */
+function parseCheckpoint(text) {
+  const lower = String(text).toLowerCase();
+  const m = lower.match(/record\s*(\d+)/);
+  if (!m) return null;
+  const after = lower.slice(m.index + m[0].length);
+  const rev = [];
+  const chars = after.replace(/[^0-9a-f]+$/, '').split('').reverse();
+  for (const c of chars) {
+    if (/[0-9a-f]/.test(c)) { rev.push(c); if (rev.length === 64) break; } else if (!/\s/.test(c)) break;
+  }
+  if (rev.length !== 64) return null;
+  return { seq: Number(m[1]), hash: rev.reverse().join('') };
+}
+
+function checkCheckpointSheet() {
+  let text = '';
+  openSheet('Check a checkpoint', (body) => {
+    const answer = h('div', {});
+    body.append(
+      h('label', { class: 'field' }, 'Paste or type the checkpoint',
+        h('textarea', { rows: 4, oninput: (e) => { text = e.target.value; } })),
+      h('button', { class: 'btn', onclick: async () => {
+        const c = parseCheckpoint(text);
+        if (!c) return answer.replaceChildren(h('div', { class: 'banner warn' }, "That doesn't read as a checkpoint: it needs the record number and the 64-character fingerprint."));
+        try {
+          const page = await api('GET', '/api/v1/records?from=' + c.seq + '&limit=1');
+          const r = page.records[0];
+          let msg; let ok = false;
+          if (!r || r.seq !== c.seq) msg = 'The history has no record ' + c.seq + ': it ends at record ' + (page.head ? page.head.seq : 0) + '. Records were removed since the checkpoint.';
+          else if (r.hash !== c.hash) msg = 'Record ' + c.seq + ' is not the one in the checkpoint: the history was changed since it was saved.';
+          else { ok = true; msg = 'The history still contains record ' + c.seq + ', unchanged, and everything before it.'; }
+          answer.replaceChildren(h('div', { class: 'banner' + (ok ? '' : ' warn') }, msg));
+        } catch (e) {
+          answer.replaceChildren(h('div', { class: 'banner warn' }, e.message));
+        }
+      } }, 'Check'),
+      answer);
+  });
+}
+
+function hex(buf) { return Array.from(new Uint8Array(buf), (x) => x.toString(16).padStart(2, '0')).join(''); }
+
+function checkStatementSheet() {
+  openSheet('Check a statement', (body) => {
+    const answer = h('div', {});
+    body.append(
+      h('p', { class: 'hint' }, 'Pick a statement PDF. Its fingerprint is compared with the ones sealed into the history when each period closed. The file stays on this device.'),
+      h('input', { type: 'file', accept: 'application/pdf,.pdf', onchange: async (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (!f) return;
+        const sha = hex(await crypto.subtle.digest('SHA-256', await f.arrayBuffer()));
+        const s = (S.view.seals || []).find((x) => x.sha256 === sha);
+        answer.replaceChildren(s
+          ? h('div', { class: 'banner' }, 'This is the statement that was sealed for ' + s.agreement + ', ' + s.period + ' (history at closing: record ' + s.head_seq + ').')
+          : h('div', { class: 'banner warn' }, 'This file is not a statement that was sealed in this book. It may have been changed, or it belongs to another book.'));
+      } }),
+      answer);
+  });
+}
+
+async function verify() {
+  try {
+    const a = await api('GET', '/api/v1/verify');
+    openSheet('Verify', (body) => {
+      if (a.history) {
+        body.append(h('h3', {}, 'Has the history been changed?'),
+          ...a.history.lines.map((l) => h('div', { class: 'banner' + (a.history.ok ? '' : ' warn') }, l)));
+      }
+      body.append(h('h3', {}, 'Do the numbers add up?'),
+        ...a.numbers.lines.map((l) => h('div', { class: 'banner' + (a.numbers.ok ? '' : ' warn') }, l)));
+    });
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+async function exportCsv(a, first) {
+  try {
+    const r = await api('GET', '/api/v1/csv/' + a.id + '/' + first);
+    saveText(r.file, r.text, 'text/csv');
+  } catch (e) {
+    toast(e.message);
+  }
 }
 
 function kv(k, v) { return h('div', { class: 'kv' }, h('span', { class: 'hint' }, k), h('span', { class: 'v' }, v)); }

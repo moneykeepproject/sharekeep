@@ -1006,6 +1006,54 @@ pub struct AgreementView {
     pub schedule: String,
 }
 
+/// A sealed statement, for "Check a statement".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SealRow {
+    pub agreement: String,
+    pub period: String,
+    pub sha256: String,
+    pub head_seq: u64,
+    pub head_hash: String,
+}
+
+pub fn seals(l: &Ledger) -> Vec<SealRow> {
+    l.seals
+        .iter()
+        .filter_map(|s| {
+            Some(SealRow {
+                agreement: l.agreements.get(&s.agreement)?.name.clone(),
+                period: format!(
+                    "{} – {}",
+                    s.first.format("%b %-d"),
+                    s.last.format("%b %-d, %Y")
+                ),
+                sha256: s.statement_sha256.clone()?,
+                head_seq: s.head_seq,
+                head_hash: s.head_hash.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Whether a file (by its SHA-256, hex) is a sealed statement: the answer in plain words, and
+/// whether it is.
+pub fn check_statement(l: &Ledger, sha256_hex: &str) -> (bool, String) {
+    let want = sha256_hex.trim().to_ascii_lowercase();
+    match seals(l).into_iter().find(|s| s.sha256 == want) {
+        Some(s) => (
+            true,
+            format!(
+                "This is the statement that was sealed for {}, {} (history at closing: record {}).",
+                s.agreement, s.period, s.head_seq
+            ),
+        ),
+        None => (
+            false,
+            "This file is not a statement that was sealed in this book. It may have been changed, or it belongs to another book.".into(),
+        ),
+    }
+}
+
 /// Everything a device's screens show, for `me` on `today`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Snapshot {
@@ -1016,6 +1064,18 @@ pub struct Snapshot {
     pub cards: Vec<AgreementCard>,
     pub approvals: Vec<ApprovalRow>,
     pub agreements: Vec<AgreementView>,
+    pub seals: Vec<SealRow>,
+    /// Backups the household restored (Hyperbooks), newest last.
+    pub restores: Vec<RestoreRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RestoreRow {
+    pub seq: u64,
+    pub date: NaiveDate,
+    pub to_seq: u64,
+    pub to_hash: String,
+    pub accepted_by_me: bool,
 }
 
 pub fn snapshot(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> Snapshot {
@@ -1091,5 +1151,210 @@ pub fn snapshot(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> Sn
         cards: agreements(l, me, cur, today),
         approvals: approvals(l, me),
         agreements: views,
+        seals: seals(l),
+        restores: l
+            .restores
+            .iter()
+            .map(|r| RestoreRow {
+                seq: r.seq,
+                date: r.date,
+                to_seq: r.to_seq,
+                to_hash: r.to_hash.clone(),
+                accepted_by_me: r.accepted.contains(&me),
+            })
+            .collect(),
     }
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn csv_cents(v: Cents) -> String {
+    let sign = if v < 0 { "-" } else { "" };
+    format!("{sign}{}.{:02}", v.abs() / 100, v.abs() % 100)
+}
+
+/// A period's entries as a spreadsheet: one row per entry with what it moved for each member
+/// and their balances after it, opening and closing rows, and (for a Hyperbook) the history's
+/// head at export on the last line. `first`: the period's first day.
+pub fn csv(
+    l: &Ledger,
+    a: AgreementId,
+    first: NaiveDate,
+    head: Option<sk_chain::Head>,
+) -> Result<(String, String), String> {
+    let ag = l.agreements.get(&a).ok_or("There's no such agreement.")?;
+    let span = ag
+        .schedule
+        .period_containing(first)
+        .ok_or("That period isn't in the agreement's schedule.")?;
+    let people: Vec<MemberId> = ag.members.keys().copied().collect();
+    let mut bal = match span.first.pred_opt() {
+        Some(d) => l.balances_until(a, Some(d)),
+        None => sk_split::ledger::Balances::new(),
+    };
+    let mut out = String::new();
+    let mut head_row = vec![
+        "Date".to_string(),
+        "Record".into(),
+        "What".into(),
+        "Category".into(),
+        "Paid by".into(),
+        "Amount".into(),
+        "Note".into(),
+    ];
+    for m in &people {
+        head_row.push(format!("{} change", name(l, *m)));
+    }
+    for m in &people {
+        head_row.push(format!("{} balance", name(l, *m)));
+    }
+    let line = |cols: Vec<String>| -> String {
+        cols.iter()
+            .map(|c| csv_field(c))
+            .collect::<Vec<_>>()
+            .join(",")
+            + "\r\n"
+    };
+    out.push_str(&line(head_row));
+    let row = |date: String,
+               seq: String,
+               what: String,
+               cat: String,
+               by: String,
+               amount: String,
+               note: String,
+               change: &BTreeMap<MemberId, Cents>,
+               bal: &sk_split::ledger::Balances| {
+        let mut cols = vec![date, seq, what, cat, by, amount, note];
+        for m in &people {
+            cols.push(change.get(m).map(|v| csv_cents(*v)).unwrap_or_default());
+        }
+        for m in &people {
+            cols.push(csv_cents(bal.get(*m)));
+        }
+        cols
+    };
+    out.push_str(&line(row(
+        span.first.to_string(),
+        String::new(),
+        "Opening balances".into(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        &BTreeMap::new(),
+        &bal,
+    )));
+    let mut entries: Vec<_> = l
+        .entries
+        .values()
+        .filter(|e| e.agreement == a && span.contains(e.date))
+        .collect();
+    entries.sort_by_key(|e| (e.date, e.seq));
+    for e in entries {
+        let counts =
+            !e.deleted && !(e.disputed && l.dispute_mode == sk_ledger::DisputeMode::HeldAside);
+        let before = bal.clone();
+        if counts {
+            for p in e.postings() {
+                let _ = bal.apply(&p);
+            }
+        }
+        let change: BTreeMap<MemberId, Cents> = people
+            .iter()
+            .map(|m| (*m, bal.get(*m) - before.get(*m)))
+            .filter(|(_, v)| *v != 0)
+            .collect();
+        let mut note = String::new();
+        if e.deleted {
+            note.push_str("deleted; ");
+        }
+        if e.disputed {
+            note.push_str("disputed; ");
+        }
+        let (what, cat, by, extra) = match &e.kind {
+            EntryKind::Expense { expense, paid, .. } => (
+                "Expense".to_string(),
+                expense.category.clone(),
+                match paid {
+                    Paid::Member(m) => name(l, *m),
+                    Paid::Pot(_) => "the pot".into(),
+                },
+                expense.note.clone().unwrap_or_default(),
+            ),
+            EntryKind::Payment(p) => (
+                "Payment".to_string(),
+                String::new(),
+                name(l, p.from),
+                format!("to {}", name(l, p.to)),
+            ),
+        };
+        note.push_str(&extra);
+        out.push_str(&line(row(
+            e.date.to_string(),
+            e.seq.to_string(),
+            what,
+            cat,
+            by,
+            csv_cents(e.amount()),
+            note.trim_end_matches("; ").to_string(),
+            &change,
+            &bal,
+        )));
+    }
+    if let Some(c) = ag.closed.iter().find(|c| c.span == span) {
+        let before = bal.clone();
+        for adj in &c.adjustments {
+            let _ = bal.apply(&sk_split::ledger::Posting::Adjustment {
+                shares: adj.clone(),
+            });
+        }
+        let change: BTreeMap<MemberId, Cents> = people
+            .iter()
+            .map(|m| (*m, bal.get(*m) - before.get(*m)))
+            .filter(|(_, v)| *v != 0)
+            .collect();
+        out.push_str(&line(row(
+            span.last.to_string(),
+            c.seq.to_string(),
+            "Period closed".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+            "cap adjustments".into(),
+            &change,
+            &bal,
+        )));
+    }
+    out.push_str(&line(row(
+        span.last.to_string(),
+        String::new(),
+        "Closing balances".into(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        &BTreeMap::new(),
+        &bal,
+    )));
+    if let Some(h) = head {
+        out.push_str(&format!(
+            "# History at export: record {} · fingerprint {}\r\n",
+            h.seq,
+            h.hash.to_hex()
+        ));
+    }
+    let file = format!(
+        "{} {} to {}.csv",
+        crate::file_safe(&ag.name),
+        span.first,
+        span.last
+    );
+    Ok((file, out))
 }

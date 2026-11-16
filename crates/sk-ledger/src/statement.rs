@@ -42,6 +42,9 @@ pub struct Statement {
     pub period: DateSpan,
     /// The `period-close` record.
     pub closed_by: u64,
+    /// That record's fingerprint (64 hex digits): the history's head at closing, printed on
+    /// the statement so every copy is a witness to the history.
+    pub closed_hash: String,
     pub members: Vec<MemberLine>,
     pub by_category: Vec<(String, Cents)>,
     pub total: Cents,
@@ -50,7 +53,13 @@ pub struct Statement {
     pub settle: Vec<(String, String, Cents)>,
 }
 
-pub(crate) fn build(l: &Ledger, a: AgreementId, span: DateSpan, seq: u64) -> Statement {
+pub(crate) fn build(
+    l: &Ledger,
+    a: AgreementId,
+    span: DateSpan,
+    seq: u64,
+    hash: String,
+) -> Statement {
     let name = |m: &MemberId| l.members.get(m).cloned().unwrap_or_else(|| m.to_string());
     let ag = l.agreements.get(&a);
     let mut paid: BTreeMap<MemberId, Cents> = BTreeMap::new();
@@ -149,6 +158,7 @@ pub(crate) fn build(l: &Ledger, a: AgreementId, span: DateSpan, seq: u64) -> Sta
         agreement_name: ag.map(|g| g.name.clone()).unwrap_or_default(),
         period: span,
         closed_by: seq,
+        closed_hash: hash,
         members,
         by_category: cats.into_iter().collect(),
         total,

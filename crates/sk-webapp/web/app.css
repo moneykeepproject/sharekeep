@@ -85,3 +85,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); min-height: 32px; 
 .stepno { color: var(--accent); font-weight: 600; font-size: 14px; }
 h2.steptitle { font-size: 24px; }
 .why { background: var(--accent-soft); color: var(--accent-dark); border-radius: 10px; padding: 10px 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.box { background: #f1f5f9; border-radius: 8px; padding: 10px; user-select: all; }
+.sheet h3 { font-size: 15px; margin: 14px 0 6px; }
+textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; }

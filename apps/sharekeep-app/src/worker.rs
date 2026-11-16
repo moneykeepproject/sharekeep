@@ -2,8 +2,11 @@
 //! on the UI thread. The UI sends [`Job`]s; each comes back as an [`Outcome`].
 
 use serde_json::{json, Value};
+use sk_chain::Head;
 use sk_chain::Record;
-use sk_client::{api::PairAnswer, Client, HubAddress, Outbox, Replica, SyncError, OUTBOX_KINDS};
+use sk_client::{
+    api::PairAnswer, Client, HubAddress, Outbox, Replica, RestoreOffer, SyncError, OUTBOX_KINDS,
+};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -38,6 +41,17 @@ pub enum Job {
         path: PathBuf,
     },
     DismissRefused,
+    /// Carry on from a backup the household restored, and say so to the hub.
+    AcceptRestore(RestoreOffer),
+    /// Does the history still contain this checkpoint? (This device's copy, then the hub.)
+    CheckCheckpoint(Head),
+    /// A file's SHA-256 (Check a statement).
+    HashFile(PathBuf),
+    /// Write text to a file (a checkpoint, a spreadsheet).
+    SaveText {
+        path: PathBuf,
+        text: String,
+    },
     /// A call to the hub computer's own admin port.
     Admin {
         method: &'static str,
@@ -57,6 +71,12 @@ pub enum AdminThen {
     Devices,
     Code,
     Done(String),
+    /// The recovery screen for a broken book.
+    Recovery(String),
+    /// What restoring a backup would lose: (book file, backup).
+    Lost(String, String),
+    /// Save the answer's `text` to this file.
+    SaveText(PathBuf),
 }
 
 #[derive(Debug)]
@@ -68,6 +88,9 @@ pub enum Outcome {
     Sent(Result<String, String>),
     Saved(Result<PathBuf, String>),
     Admin(AdminThen, Result<Value, String>),
+    /// A checkpoint's answer: (kept everywhere, the words).
+    Checked(bool, String),
+    Hashed(Result<String, String>),
 }
 
 /// The local copy after a sync.
@@ -80,6 +103,10 @@ pub struct Synced {
     /// Why the hub couldn't be reached, or what's wrong with its history.
     pub problem: Option<String>,
     pub offline: bool,
+    /// A restored backup waiting to be accepted.
+    pub restore: Option<RestoreOffer>,
+    /// The last record this device has, and when it last synced (ms).
+    pub seen: Option<(u64, i64)>,
 }
 
 struct Paired {
@@ -196,6 +223,48 @@ impl Worker {
                 }
                 Outcome::Synced(self.status_only())
             }
+            Job::AcceptRestore(offer) => {
+                let Some(p) = self.paired.as_mut() else {
+                    return Some(Outcome::Synced(Synced::default()));
+                };
+                let r = p
+                    .replica
+                    .accept_restore(&p.client, &offer, now_ms())
+                    .map_err(|e| e.to_string())
+                    .and_then(|_| {
+                        p.client
+                            .submit_now("restore-accept", &json!({"restore": offer.seq}))
+                            .map_err(|e| e.to_string())
+                    });
+                match r {
+                    Ok(_) => {
+                        self.last_head = None;
+                        Outcome::Synced(self.sync())
+                    }
+                    Err(e) => Outcome::Sent(Err(e)),
+                }
+            }
+            Job::CheckCheckpoint(head) => self.check_checkpoint(head),
+            Job::HashFile(path) => Outcome::Hashed(
+                std::fs::read(&path)
+                    .map(|b| sk_chain::Hash::of(&b).to_hex())
+                    .map_err(|e| format!("The file can't be read ({e}).")),
+            ),
+            Job::SaveText { path, text } => Outcome::Saved(
+                std::fs::write(&path, text)
+                    .map(|_| path.clone())
+                    .map_err(|e| format!("the file can't be saved ({e})")),
+            ),
+            Job::Admin {
+                method,
+                path,
+                body,
+                then: AdminThen::SaveText(to),
+            } => Outcome::Saved(self.admin(method, &path, body).and_then(|v| {
+                std::fs::write(&to, v["text"].as_str().unwrap_or(""))
+                    .map(|_| to.clone())
+                    .map_err(|e| format!("the file can't be saved ({e})"))
+            })),
             Job::Admin {
                 method,
                 path,
@@ -220,7 +289,40 @@ impl Worker {
                 .collect(),
             problem: None,
             offline: false,
+            restore: None,
+            seen: p
+                .replica
+                .head()
+                .map(|h| (h.seq, p.replica.last_synced().unwrap_or(0))),
         }
+    }
+
+    fn check_checkpoint(&self, head: Head) -> Outcome {
+        use sk_chain::checkpoint::{check, explain, Found};
+        let Some(p) = &self.paired else {
+            return Outcome::Checked(false, "This device isn't paired yet.".into());
+        };
+        let here = check(p.replica.records(), head);
+        let mut lines = vec![format!("On this device: {}", explain(&here, head))];
+        let hub = match p.client.records(head.seq, 1) {
+            Ok(page) => {
+                let found = match page.records.first() {
+                    Some(r) if r.seq == head.seq && r.hash == head.hash => Found::Kept,
+                    Some(r) if r.seq == head.seq => Found::Rewritten,
+                    _ => Found::Missing {
+                        have: page.head.map(|h| h.seq),
+                    },
+                };
+                lines.push(format!("On the hub: {}", explain(&found, head)));
+                Some(found)
+            }
+            Err(e) => {
+                lines.push(format!("On the hub: not checked ({e})."));
+                None
+            }
+        };
+        let ok = here == Found::Kept && hub.is_none_or(|f| f == Found::Kept);
+        Outcome::Checked(ok, lines.join("\n"))
     }
 
     fn sync(&mut self) -> Synced {
@@ -233,12 +335,14 @@ impl Worker {
             .stopped
             .as_ref()
             .is_some_and(|e| matches!(e, sk_client::CallError::Offline(_)));
+        let mut restore = None;
         match p.replica.sync(&p.client, now_ms()) {
             Ok(_) => {}
             Err(SyncError::Offline(e)) => {
                 offline = matches!(e, sk_client::CallError::Offline(_));
                 problem = Some(e.to_string());
             }
+            Err(SyncError::Restored(o)) => restore = Some(o),
             Err(e) => problem = Some(e.to_string()),
         }
         let head = p.replica.head().map(|h| h.seq);
@@ -249,6 +353,7 @@ impl Worker {
             None
         };
         let mut s = self.status_only();
+        s.restore = restore;
         s.records = records;
         s.problem = problem;
         s.offline = offline;

@@ -4,3 +4,24 @@
 
 pub mod demo;
 pub mod view;
+
+/// A name made safe to use in a file name.
+pub fn file_safe(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " -_.()&".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(60)
+        .collect();
+    if s.trim().is_empty() {
+        "Agreement".into()
+    } else {
+        s
+    }
+}

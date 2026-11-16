@@ -21,7 +21,8 @@ export struct DueS { name: string, date: string, detail: string, bill: bool, min
 export struct DepositS { label: string, kind: string, balance: string, detail: string }
 export struct RecurringS { id: int, name: string, detail: string, stopped: bool }
 export struct NeedS { name: string, value: string }
-export struct BookS { file: string, name: string, detail: string, encrypted: bool }
+export struct BookS { file: string, name: string, detail: string, encrypted: bool, broken: bool }
+export struct BackupS { file: string, title: string, detail: string, ok: bool }
 
 // Vertically scrolling page, centred and capped in width for desktops.
 component Page inherits ScrollView {
@@ -284,6 +285,21 @@ export component AppWindow inherits Window {
     in property <[ExampleS]> rule-examples;
     in property <string> rule-error;
 
+    // Hyperbook, Verify, recovery
+    in property <bool> is-hyperbook;
+    in property <string> hb-head;
+    in property <string> hb-fingerprint;
+    in property <string> hb-seen;
+    in property <string> hb-stale;
+    in property <string> checkpoint-text;
+    in property <image> checkpoint-qr;
+    in-out property <string> checkpoint-input;
+    in property <string> check-answer;
+    in property <bool> check-ok;
+    in property <string> verify-answer;
+    in property <bool> verify-ok;
+    in property <string> restore-text;
+
     // the hub computer
     in-out property <string> hub-pin;
     // closed books (the open one is hub-current-*)
@@ -300,6 +316,13 @@ export component AppWindow inherits Window {
     in property <image> hub-qr;
     in property <string> hub-error;
     in property <string> hub-info;
+    // recovering a broken book on the hub
+    in property <string> rec-file;
+    in property <string> rec-name;
+    in property <string> rec-problem;
+    in property <[BackupS]> rec-backups;
+    in property <string> rec-lost;
+    in property <string> rec-backup;
     in-out property <string> new-book-name;
     in-out property <bool> new-book-hyperbook;
     in-out property <string> new-book-password;
@@ -351,6 +374,18 @@ export component AppWindow inherits Window {
     callback hub-new-agreement();
     callback hub-make-code(int);
     callback hub-remove-device(int);
+    callback save-checkpoint();
+    callback save-checkpoint-file();
+    callback check-checkpoint();
+    callback check-statement();
+    callback verify();
+    callback accept-restore();
+    callback export-csv(string);
+    callback hub-recover(string);
+    callback hub-recover-pick(string);
+    callback hub-restore();
+    callback hub-recover-cancel();
+    callback hub-export-broken();
 
     VerticalLayout {
         // ----- header -----
@@ -476,6 +511,12 @@ export component AppWindow inherits Window {
 
             // 1: home
             if root.page == 1: Page {
+                if root.restore-text != "": Card {
+                    stripe: Theme.amber-line;
+                    SectionTitle { text: "A backup was restored"; }
+                    Hint { text: root.restore-text; }
+                    BigButton { text: "Accept and carry on"; clicked => { root.accept-restore(); } }
+                }
                 if root.banner != "": Banner { text: root.banner; warn: root.offline; }
                 if root.pending > 0: Banner { text: root.pending + " waiting to send to the hub."; warn: true; }
                 for c in root.cards: Card {
@@ -620,6 +661,7 @@ export component AppWindow inherits Window {
                         Hint { text: p.state; }
                         if p.can-close: BigButton { text: "Close this period"; clicked => { root.close-period(p.key); } }
                         if p.closed: BigButton { text: "Save the statement (PDF)"; primary: false; clicked => { root.statement(p.key); } }
+                        LinkButton { text: "Export to a spreadsheet (CSV)"; clicked => { root.export-csv(p.key); } }
                     }
                 }
             }
@@ -654,6 +696,37 @@ export component AppWindow inherits Window {
                     SectionTitle { text: "Not accepted by the hub"; }
                     for r in root.refused: Text { text: r; wrap: word-wrap; color: Theme.ink; }
                     LinkButton { text: "Dismiss"; clicked => { root.dismiss-refused(); } }
+                }
+                if root.restore-text != "": Card {
+                    stripe: Theme.amber-line;
+                    SectionTitle { text: "A backup was restored"; }
+                    Hint { text: root.restore-text; }
+                    BigButton { text: "Accept and carry on"; clicked => { root.accept-restore(); } }
+                }
+                if root.is-hyperbook: Card {
+                    SectionTitle { text: "Hyperbook"; }
+                    KeyValue { label: "History"; value: root.hb-head; }
+                    Hint { text: root.hb-fingerprint; }
+                    if root.hb-seen != "": Hint { text: root.hb-seen; }
+                    if root.hb-stale != "": Hint { text: root.hb-stale; color: Theme.amber; }
+                    BigButton { text: "Save a checkpoint"; primary: false; clicked => { root.save-checkpoint(); } }
+                    if root.checkpoint-text != "": VerticalLayout {
+                        spacing: 8px;
+                        Hint { text: "Keep this outside the house: print it, photograph the QR code, or email it to yourself. Check a checkpoint shows later whether the history still contains it, unchanged."; }
+                        LineEdit { text: root.checkpoint-text; read-only: true; min-height: 40px; }
+                        Image { source: root.checkpoint-qr; width: 180px; height: 180px; image-rendering: pixelated; horizontal-alignment: center; }
+                        BigButton { text: "Save as a file"; primary: false; clicked => { root.save-checkpoint-file(); } }
+                    }
+                    Field { label: "Check a checkpoint: paste or type it"; placeholder: "ShareKeep checkpoint · …"; text <=> root.checkpoint-input; }
+                    BigButton { text: "Check it"; primary: false; enabled: root.checkpoint-input != ""; clicked => { root.check-checkpoint(); } }
+                    BigButton { text: "Check a statement (PDF)"; primary: false; clicked => { root.check-statement(); } }
+                    if root.check-answer != "": Banner { text: root.check-answer; warn: !root.check-ok; }
+                }
+                Card {
+                    SectionTitle { text: "Verify"; }
+                    Hint { text: root.is-hyperbook ? "Two questions, answered from the whole history on this device: has it been changed, and do the numbers add up?" : "Do the numbers add up? Every record is replayed under the book's rules, on this device."; }
+                    BigButton { text: "Verify the book"; primary: false; clicked => { root.verify(); } }
+                    if root.verify-answer != "": Banner { text: root.verify-answer; warn: !root.verify-ok; }
                 }
                 Card {
                     SectionTitle { text: "About"; }
@@ -704,6 +777,23 @@ export component AppWindow inherits Window {
                     ChipStrip { chips: root.hub-agreement-members; picked(id) => { root.hub-member-picked(id); } }
                     BigButton { text: "Create the agreement (settles monthly, on the 1st)"; primary: false; enabled: root.new-agreement-name != "" && root.hub-pick-count > 0; clicked => { root.hub-new-agreement(); } }
                 }
+                if root.rec-file != "": Card {
+                    stripe: Theme.red;
+                    SectionTitle { text: "Recover " + root.rec-name; }
+                    Hint { text: root.rec-problem; }
+                    Hint { text: "Pick a backup to carry on from. The broken book is kept, renamed, and its history can be saved as it is. Devices are told and accept the restore themselves."; }
+                    for b in root.rec-backups: VerticalLayout {
+                        spacing: 4px;
+                        Text { text: b.title; font-weight: 600; color: b.ok ? Theme.ink : Theme.muted; }
+                        Hint { text: b.detail; }
+                        if b.ok: BigButton { text: "Use this backup"; primary: false; clicked => { root.hub-recover-pick(b.file); } }
+                    }
+                    if root.rec-backups.length == 0: Hint { text: "There are no backups of this book on the hub."; }
+                    if root.rec-lost != "": Banner { text: root.rec-lost; warn: true; }
+                    if root.rec-backup != "": BigButton { text: "Restore it"; danger: true; clicked => { root.hub-restore(); } }
+                    BigButton { text: "Save the broken history as it is"; primary: false; clicked => { root.hub-export-broken(); } }
+                    LinkButton { text: "Cancel"; clicked => { root.hub-recover-cancel(); } }
+                }
                 if root.hub-books.length > 0: Card {
                     SectionTitle { text: "Other books on this hub"; }
                     if root.hub-current-name != "": Hint { text: "Close " + root.hub-current-name + " to open one of these."; }
@@ -712,7 +802,8 @@ export component AppWindow inherits Window {
                         Text { text: b.name; font-weight: 600; color: Theme.ink; }
                         Hint { text: b.detail; }
                         if b.encrypted && root.hub-current-name == "": Field { label: "Password or recovery key"; secret: true; text <=> root.unlock-password; }
-                        BigButton { text: "Open " + b.name; primary: false; enabled: root.hub-current-name == "" && (!b.encrypted || root.unlock-password != ""); clicked => { root.hub-unlock(b.file); } }
+                        if !b.broken: BigButton { text: "Open " + b.name; primary: false; enabled: root.hub-current-name == "" && (!b.encrypted || root.unlock-password != ""); clicked => { root.hub-unlock(b.file); } }
+                        if b.broken: BigButton { text: "Recover " + b.name; danger: true; enabled: root.hub-current-name == "" && (!b.encrypted || root.unlock-password != ""); clicked => { root.hub-recover(b.file); } }
                     }
                 }
                 Card {

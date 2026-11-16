@@ -475,7 +475,40 @@ pub enum SyncError {
     Rewritten(Broken),
     /// A record from the hub doesn't check out.
     Broken(Broken),
+    /// The household restored a backup: the hub carries on from a point before this
+    /// device's last record. The local copy is kept until the person accepts.
+    Restored(RestoreOffer),
     Local(String),
+}
+
+/// A restore this device can accept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreOffer {
+    /// The `restore` record.
+    pub seq: u64,
+    pub when: chrono::NaiveDate,
+    pub backup: String,
+    /// The backup's last record: what both histories share.
+    pub to_seq: u64,
+    /// This device's records after that, which the restored book doesn't have.
+    pub lost_from: u64,
+    pub lost_to: u64,
+}
+
+impl RestoreOffer {
+    pub fn text(&self) -> String {
+        let lost = if self.lost_from == self.lost_to {
+            format!("record {} is", self.lost_from)
+        } else {
+            format!("records {} to {} are", self.lost_from, self.lost_to)
+        };
+        format!(
+            "The household restored a backup on {}. The book carries on from record {}; {lost} \
+             not in it and will need to be entered again. Accept to carry on from the backup; \
+             until then this device only shows its own copy.",
+            self.when, self.to_seq
+        )
+    }
 }
 
 impl fmt::Display for SyncError {
@@ -489,6 +522,7 @@ impl fmt::Display for SyncError {
             SyncError::Broken(b) => {
                 write!(f, "The hub sent a history that doesn't check out ({b}).")
             }
+            SyncError::Restored(o) => write!(f, "{}", o.text()),
             SyncError::Local(e) => write!(f, "{e}"),
         }
     }
@@ -586,6 +620,9 @@ impl Replica {
                         .first()
                         .is_some_and(|r| r.seq == h.seq && r.hash == h.hash);
                     if !still_there {
+                        if let Some(o) = self.find_restore(client) {
+                            return Err(SyncError::Restored(o));
+                        }
                         return Err(SyncError::Rewritten(Broken {
                             at: h.seq,
                             problem: sk_chain::Problem::Rewritten,
@@ -609,6 +646,65 @@ impl Replica {
         self.meta.last_synced = Some(now);
         self.save().map_err(SyncError::Local)?;
         Ok(added)
+    }
+
+    /// When the hub's history differs from ours: is it because a backup was restored? That
+    /// is, a `restore` record continuing from a record this device has, unchanged.
+    fn find_restore(&self, client: &Client) -> Option<RestoreOffer> {
+        let ours = self.meta.head?;
+        let mut from = 0;
+        let mut found = None;
+        loop {
+            let page = client.records(from, PAGE).ok()?.records;
+            for r in &page {
+                if r.kind != "restore" {
+                    continue;
+                }
+                let to = r.body["restored_to"]["seq"].as_u64()?;
+                let hash = r.body["restored_to"]["hash"].as_str().unwrap_or("");
+                let shared = self
+                    .records
+                    .iter()
+                    .find(|x| x.seq == to)
+                    .is_some_and(|x| x.hash.to_hex() == hash);
+                if shared && to < ours.seq {
+                    found = Some(RestoreOffer {
+                        seq: r.seq,
+                        when: chrono::DateTime::from_timestamp_millis(r.ts)
+                            .map_or_else(chrono::NaiveDate::default, |d| d.date_naive()),
+                        backup: r.body["backup"].as_str().unwrap_or("").to_string(),
+                        to_seq: to,
+                        lost_from: to + 1,
+                        lost_to: ours.seq,
+                    });
+                }
+            }
+            match page.last() {
+                Some(l) if (page.len() as u64) >= PAGE => from = l.seq + 1,
+                _ => break,
+            }
+        }
+        found
+    }
+
+    /// Carry on from a restored backup: drop this device's records after it (the offer
+    /// lists them) and fetch the hub's history from there.
+    pub fn accept_restore(
+        &mut self,
+        client: &Client,
+        offer: &RestoreOffer,
+        now: i64,
+    ) -> Result<usize, SyncError> {
+        let again = self.find_restore(client);
+        if again.as_ref().map(|o| o.seq) != Some(offer.seq) {
+            return Err(SyncError::Local(
+                "The hub's history changed again; sync and look at the offer again.".into(),
+            ));
+        }
+        self.records.retain(|r| r.seq <= offer.to_seq);
+        self.meta.head = self.records.last().map(Record::head);
+        self.save().map_err(SyncError::Local)?;
+        self.sync(client, now)
     }
 }
 

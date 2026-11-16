@@ -53,6 +53,7 @@ pub const DEVICE_KINDS: &[&str] = &[
     "period-close",
     "schedule",
     "recurring",
+    "restore-accept",
 ];
 
 /// Kinds the hub computer may add besides those.
@@ -151,6 +152,8 @@ struct Book {
     /// Its name, remembered while it's closed (a closed book's file isn't read).
     name: Option<String>,
     encrypted: bool,
+    /// A Hyperbook whose history doesn't verify: where it breaks (guided recovery).
+    broken: Option<u64>,
 }
 
 /// Replay a book's history into its state.
@@ -185,6 +188,7 @@ impl Book {
             store: Some(store),
             ledger,
             problem: None,
+            broken: None,
         }
     }
 
@@ -211,6 +215,7 @@ impl Book {
             "head": self.store.as_ref().and_then(Store::head).map(|h| h.seq),
             "open": self.store.is_some(),
             "problem": self.problem,
+            "broken": self.broken,
         })
     }
 }
@@ -297,6 +302,7 @@ fn load_books(dir: &Path, current: Option<&str>, log: &Log) -> Vec<Book> {
         };
         let kind = sk_store::book_kind(&path);
         let encrypted = matches!(kind, Ok(BookKind::Encrypted));
+        let mut broken = None;
         let problem = match kind {
             Ok(BookKind::Encrypted) if chosen => {
                 "locked: enter its password on the hub computer".to_string()
@@ -305,6 +311,10 @@ fn load_books(dir: &Path, current: Option<&str>, log: &Log) -> Vec<Book> {
                 Ok(s) => {
                     out.push(Book::open(file, path, s, log));
                     continue;
+                }
+                Err(StoreError::HistoryBroken(b)) => {
+                    broken = Some(b.at);
+                    StoreError::HistoryBroken(b).to_string()
                 }
                 Err(e) => e.to_string(),
             },
@@ -319,6 +329,7 @@ fn load_books(dir: &Path, current: Option<&str>, log: &Log) -> Vec<Book> {
             problem: Some(problem),
             name: None,
             encrypted,
+            broken,
         });
     }
     out
@@ -668,7 +679,24 @@ fn add_record(
             let _ = book.ledger.apply(&seal);
         }
     }
+    if fresh {
+        daily_backup(shared, store);
+    }
     Ok((rec, fresh))
+}
+
+/// One backup a day, made with the day's first change (`<name> backup <date>.sharekeep` in
+/// the backups folder): what guided recovery restores from if the book ever breaks.
+fn daily_backup(shared: &Shared, store: &Store) {
+    let label = sk_ledger::day_of(shared.now()).to_string();
+    let dir = shared.data.join(BACKUPS_DIR);
+    let name = sk_store::file_name_for(&format!("{} backup {label}", store.info().name));
+    if dir.join(&name).exists() {
+        return;
+    }
+    if let Err(e) = store.backup(&dir, &label) {
+        (shared.log)(&format!("the daily backup failed: {e}"));
+    }
 }
 
 // ----- devices --------------------------------------------------------------------------------
@@ -795,7 +823,14 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
             match device_view(shared, d, |l, cur, today| {
                 json!(sk_view::view::snapshot(l, me, cur, today))
             }) {
-                Ok(v) => send(shared, req, 200, &v),
+                Ok(mut v) => {
+                    // the head, so the web app can remember it and notice a rewrite
+                    let head = book_by_id(&mut shared.lock(), &d.book_id)
+                        .ok()
+                        .and_then(|s| s.head());
+                    v["head"] = json!(head);
+                    send(shared, req, 200, &v)
+                }
                 Err((s, m)) => fail(shared, req, s, &m),
             }
         }
@@ -913,6 +948,48 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
             drop(st);
             match result {
                 Ok((rec, fresh)) => send(shared, req, if fresh { 201 } else { 200 }, &json!(rec)),
+                Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
+        ("GET", "/api/v1/verify") => {
+            // Verify, answered by the hub from the whole history
+            let mut st = shared.lock();
+            let answer = match book_by_id(&mut st, &d.book_id) {
+                Ok(s) => {
+                    let hyper = s.info().hyperbook;
+                    s.records(0, u64::MAX)
+                        .map(|r| json!(sk_ledger::audit::audit(&r, hyper)))
+                        .map_err(|e| (store_status(&e), e.to_string()))
+                }
+                Err((s, m)) => Err((s, m.to_string())),
+            };
+            drop(st);
+            match answer {
+                Ok(v) => send(shared, req, 200, &v),
+                Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
+        ("GET", p) if p.starts_with("/api/v1/csv/") => {
+            // /api/v1/csv/<agreement>/<first day>
+            let rest: Vec<&str> = p.trim_start_matches("/api/v1/csv/").split('/').collect();
+            let a = rest.first().and_then(|a| a.parse::<u32>().ok());
+            let first = rest
+                .get(1)
+                .and_then(|f| f.parse::<sk_core::NaiveDate>().ok());
+            let (Some(a), Some(first)) = (a, first) else {
+                return fail(shared, req, 404, "No such period.");
+            };
+            let head = book_by_id(&mut shared.lock(), &d.book_id)
+                .ok()
+                .filter(|s| s.info().hyperbook)
+                .and_then(|s| s.head());
+            match device_view(shared, d, |l, _, _| {
+                sk_view::view::csv(l, sk_core::AgreementId(a), first, head)
+            }) {
+                Ok(Ok((file, text))) => {
+                    send(shared, req, 200, &json!({"file": file, "text": text}))
+                }
+                Ok(Err(why)) => fail(shared, req, 404, &why),
                 Err((s, m)) => fail(shared, req, s, &m),
             }
         }
@@ -1133,6 +1210,192 @@ struct UnlockRequest {
     password: Option<String>,
     #[serde(default)]
     recovery_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RecoveryRequest {
+    backup: String,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    recovery_key: Option<String>,
+}
+
+fn secret_of(password: &Option<String>, recovery_key: &Option<String>) -> Option<Secret> {
+    match (
+        password.clone().filter(|p| !p.is_empty()),
+        recovery_key.clone(),
+    ) {
+        (Some(p), _) => Some(Secret::Password(p)),
+        (None, Some(r)) => Some(Secret::RecoveryKey(r)),
+        _ => None,
+    }
+}
+
+type Answer = Result<Value, (u16, String)>;
+
+/// The broken book's path and id (read without checking its history).
+fn broken_book(
+    shared: &Shared,
+    file: &str,
+    secret: Option<&Secret>,
+) -> Result<(PathBuf, Store), (u16, String)> {
+    let st = shared.lock();
+    let book = st
+        .books
+        .iter()
+        .find(|b| b.file == file)
+        .ok_or((404, "No such book on the hub.".to_string()))?;
+    if book.broken.is_none() {
+        return Err((409, "That book isn't broken.".to_string()));
+    }
+    let path = book.path.clone();
+    drop(st);
+    let s =
+        Store::open_for_recovery(&path, secret).map_err(|e| (store_status(&e), e.to_string()))?;
+    Ok((path, s))
+}
+
+/// The recovery screen: what's wrong, and every backup of the book, checked.
+fn recovery(shared: &Shared, file: &str, b: &UnlockRequest) -> Answer {
+    let secret = secret_of(&b.password, &b.recovery_key);
+    let (_, store) = broken_book(shared, file, secret.as_ref())?;
+    let problem = match store.verify() {
+        Err(e) => e.to_string(),
+        Ok(_) => "The history checks out now.".into(),
+    };
+    let info = store.info().clone();
+    drop(store);
+    let backups = sk_store::scan_backups(
+        &shared.data.join(BACKUPS_DIR),
+        &info.book_id,
+        secret.as_ref(),
+    );
+    Ok(json!({"name": info.name, "problem": problem, "backups": backups}))
+}
+
+/// Records in the broken book after a backup's last record: what restoring it would lose.
+fn lost(shared: &Shared, file: &str, b: &RecoveryRequest) -> Answer {
+    let secret = secret_of(&b.password, &b.recovery_key);
+    let backup = backup_path(shared, &b.backup)?;
+    let head = Store::open_for_recovery(&backup, secret.as_ref())
+        .map_err(|e| (store_status(&e), e.to_string()))?
+        .head()
+        .map_or(0, |h| h.seq);
+    let (_, store) = broken_book(shared, file, secret.as_ref())?;
+    let records = store
+        .records(head + 1, u64::MAX)
+        .map_err(|e| (store_status(&e), e.to_string()))?;
+    let rows: Vec<Value> = records
+        .iter()
+        .map(|r| {
+            json!({
+                "seq": r.seq,
+                "kind": r.kind,
+                "when": sk_ledger::day_of(r.ts),
+                "member": r.author.member,
+                "device": r.author.device,
+                "body": r.body,
+            })
+        })
+        .collect();
+    Ok(json!({"after": head, "records": rows, "verified": false}))
+}
+
+/// The broken history as it is (one record per line), with where it breaks.
+fn export_broken(shared: &Shared, file: &str, b: &UnlockRequest) -> Answer {
+    let secret = secret_of(&b.password, &b.recovery_key);
+    let (_, store) = broken_book(shared, file, secret.as_ref())?;
+    let at = store.verify().err().and_then(|e| match e {
+        StoreError::HistoryBroken(b) => Some(b.at),
+        _ => None,
+    });
+    let text = store
+        .export_history()
+        .map_err(|e| (store_status(&e), e.to_string()))?;
+    Ok(json!({"broken_at": at, "text": text}))
+}
+
+fn backup_path(shared: &Shared, name: &str) -> Result<PathBuf, (u16, String)> {
+    let ok = !name.is_empty()
+        && !name.contains(['/', '\\'])
+        && !name.starts_with('.')
+        && name.ends_with(".sharekeep");
+    if !ok {
+        return Err((400, "That isn't a backup's name.".into()));
+    }
+    let p = shared.data.join(BACKUPS_DIR).join(name);
+    if !p.is_file() {
+        return Err((404, "No such backup.".into()));
+    }
+    Ok(p)
+}
+
+/// Carry on from a backup: a separate restored copy becomes the book the hub works in, the
+/// broken file is set aside (kept, renamed), and a `restore` record says so in the history.
+fn restore(shared: &Shared, file: &str, b: &RecoveryRequest) -> Answer {
+    let secret = secret_of(&b.password, &b.recovery_key);
+    let backup = backup_path(shared, &b.backup)?;
+    let (broken_path, broken) = broken_book(shared, file, secret.as_ref())?;
+    let broken_at = broken.verify().err().and_then(|e| match e {
+        StoreError::HistoryBroken(x) => Some(x.at),
+        _ => None,
+    });
+    let book_id = broken.info().book_id.clone();
+    drop(broken);
+    if let Some(name) = open_name(&shared.lock()) {
+        return Err((
+            409,
+            format!("{name} is open. Close it first, then restore."),
+        ));
+    }
+    let label = sk_ledger::day_of(shared.now()).to_string();
+    let books = shared.data.join(BOOKS_DIR);
+    let copy = sk_store::restore_copy(&backup, &books, &label)
+        .map_err(|e| (store_status(&e), e.to_string()))?;
+    let mut store = match Store::open(&copy, secret.as_ref()) {
+        Ok(s) if s.info().book_id == book_id => s,
+        Ok(_) => {
+            let _ = std::fs::remove_file(&copy);
+            return Err((400, "That backup is of another book.".into()));
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&copy);
+            return Err((store_status(&e), format!("That backup can't be used: {e}")));
+        }
+    };
+    let head = store
+        .head()
+        .ok_or((500, "The backup is empty.".to_string()))?;
+    let aside = sk_store::set_aside_broken(&broken_path, &label)
+        .map_err(|e| (store_status(&e), e.to_string()))?;
+    let body = json!({
+        "backup": b.backup,
+        "restored_to": {"seq": head.seq, "hash": head.hash.to_hex()},
+        "broken_at": broken_at,
+    });
+    store
+        .append(shared.now(), Author::hub(), "restore", body)
+        .map_err(|e| (store_status(&e), e.to_string()))?;
+    let copy_file = copy
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut st = shared.lock();
+    st.books.retain(|x| x.file != file);
+    let book = Book::open(copy_file.clone(), copy, store, &shared.log);
+    let summary = book.summary();
+    st.books.push(book);
+    let saved = st.registry.set(CURRENT_BOOK, &copy_file);
+    drop(st);
+    if let Err(e) = saved {
+        (shared.log)(&e);
+    }
+    Ok(json!({
+        "book": summary,
+        "set_aside": aside.file_name().map(|n| n.to_string_lossy().into_owned()),
+        "restored_to": head.seq,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -1357,10 +1620,45 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
                     }
                     send(shared, req, 200, &s)
                 }
+                Err(StoreError::HistoryBroken(b)) => {
+                    book.broken = Some(b.at);
+                    let e = StoreError::HistoryBroken(b);
+                    book.problem = Some(e.to_string());
+                    drop(st);
+                    fail(shared, req, 423, &e.to_string())
+                }
                 Err(e) => {
                     drop(st);
                     fail(shared, req, store_status(&e), &e.to_string())
                 }
+            }
+        }
+        ("POST", ["books", file, "recovery"]) => {
+            let b = body!(UnlockRequest);
+            match recovery(shared, file, &b) {
+                Ok(v) => send(shared, req, 200, &v),
+                Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
+        ("POST", ["books", file, "lost"]) => {
+            let b = body!(RecoveryRequest);
+            match lost(shared, file, &b) {
+                Ok(v) => send(shared, req, 200, &v),
+                Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
+        ("POST", ["books", file, "export-broken"]) => {
+            let b = body!(UnlockRequest);
+            match export_broken(shared, file, &b) {
+                Ok(v) => send(shared, req, 200, &v),
+                Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
+        ("POST", ["books", file, "restore"]) => {
+            let b = body!(RecoveryRequest);
+            match restore(shared, file, &b) {
+                Ok(v) => send(shared, req, 201, &v),
+                Err((s, m)) => fail(shared, req, s, &m),
             }
         }
         ("POST", ["books", file, "close"]) => {

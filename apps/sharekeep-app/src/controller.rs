@@ -56,6 +56,17 @@ pub struct State {
     ez_people_done: bool,
     ez_manual: Option<i32>,
     seq: u64,
+    /// This device's copy of the history (Verify, checkpoints, CSV).
+    pub records: Vec<sk_chain::Record>,
+    /// A restored backup waiting to be accepted; until then, no changes.
+    pub restore: Option<sk_client::RestoreOffer>,
+    /// The last record this device has and when it last synced (ms).
+    pub seen: Option<(u64, i64)>,
+    /// Recovering a broken book on the hub: its file and the backup picked.
+    rec_file: Option<String>,
+    rec_backup: Option<String>,
+    /// After pairing or closing a period: suggest a checkpoint once the history arrives.
+    offer_checkpoint: bool,
 }
 
 fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
@@ -115,6 +126,12 @@ impl State {
             ez_people_done: false,
             ez_manual: None,
             seq: 0,
+            records: Vec::new(),
+            restore: None,
+            seen: None,
+            rec_file: None,
+            rec_backup: None,
+            offer_checkpoint: false,
         }
     }
 
@@ -123,7 +140,15 @@ impl State {
     }
 
     fn send(&self, job: Job) {
+        // a restored backup waits for the person: nothing new is sent before they accept it
+        if self.restore.is_some() && matches!(job, Job::Send { .. }) {
+            return;
+        }
         let _ = self.jobs.send(job);
+    }
+
+    fn hyperbook(&self) -> bool {
+        self.cfg.book.as_ref().is_some_and(|b| b.hyperbook)
     }
 
     fn client_id(&mut self) -> String {
@@ -181,12 +206,22 @@ impl State {
                 ui.set_connect_pin(s(""));
                 ui.set_connect_code(s(""));
                 ui.set_page(1);
+                self.offer_checkpoint = true;
                 self.connect();
             }
             Outcome::Paired(Err(e)) => ui.set_connect_error(s(e)),
             Outcome::Synced(sync) => {
                 if let Some(records) = sync.records {
                     self.ledger = Ledger::replay(&records).0;
+                    self.records = records;
+                }
+                self.restore = sync.restore;
+                self.seen = sync.seen;
+                if self.offer_checkpoint && !self.records.is_empty() {
+                    self.offer_checkpoint = false;
+                    if self.hyperbook() {
+                        toast(ui, "Optional: keep a checkpoint outside the house. Settings > Hyperbook > Save a checkpoint.");
+                    }
                 }
                 self.pending = sync.pending;
                 self.refused = sync.refused;
@@ -206,6 +241,19 @@ impl State {
             Outcome::Saved(Ok(p)) => toast(ui, &format!("Saved {}", p.display())),
             Outcome::Saved(Err(e)) => toast(ui, &e),
             Outcome::Admin(then, Ok(v)) => self.on_admin(ui, then, v),
+            Outcome::Checked(ok, text) => {
+                ui.set_check_ok(ok);
+                ui.set_check_answer(s(text));
+            }
+            Outcome::Hashed(Ok(sha)) => {
+                let (ok, text) = view::check_statement(&self.ledger, &sha);
+                ui.set_check_ok(ok);
+                ui.set_check_answer(s(text));
+            }
+            Outcome::Hashed(Err(e)) => {
+                ui.set_check_ok(false);
+                ui.set_check_answer(s(e));
+            }
             Outcome::Admin(_, Err(e)) => {
                 ui.set_hub_error(s(e));
             }
@@ -252,6 +300,7 @@ impl State {
                         name: s(b["name"].as_str().or(b["file"].as_str()).unwrap_or("")),
                         detail: s(detail(b)),
                         encrypted: b["encrypted"].as_bool().unwrap_or(false),
+                        broken: !b["broken"].is_null(),
                     })
                     .collect();
                 ui.set_hub_books(model(books));
@@ -344,8 +393,322 @@ impl State {
                 self.keep_info = true;
                 self.hub_status();
             }
-            AdminThen::Done(_) => {}
+            AdminThen::Recovery(file) => {
+                let backups: Vec<BackupS> = v["backups"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|b| {
+                        let ok = b["status"] == "ok";
+                        let when = chrono::DateTime::from_timestamp_millis(
+                            b["modified"].as_i64().unwrap_or(0),
+                        )
+                        .map(|d| {
+                            d.with_timezone(&chrono::Local)
+                                .format("%b %-d, %Y %H:%M")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+                        let head = b["head"]["seq"].as_u64();
+                        let mut detail = vec![when];
+                        if let Some(h) = head {
+                            detail.push(format!("up to record {h}"));
+                        }
+                        match b["status"].as_str() {
+                            Some("broken") => detail.push(format!(
+                                "also broken, at record {}",
+                                b["broken_at"].as_u64().unwrap_or(0)
+                            )),
+                            Some("unreadable") => detail.push(format!(
+                                "can't be read: {}",
+                                b["problem"].as_str().unwrap_or("")
+                            )),
+                            _ => detail.push("checks out".into()),
+                        }
+                        BackupS {
+                            file: s(b["file"].as_str().unwrap_or("")),
+                            title: s(b["file"].as_str().unwrap_or("")),
+                            detail: s(detail.join(" · ")),
+                            ok,
+                        }
+                    })
+                    .collect();
+                self.rec_file = Some(file.clone());
+                self.rec_backup = None;
+                ui.set_rec_file(s(&file));
+                ui.set_rec_name(s(v["name"].as_str().unwrap_or(&file)));
+                ui.set_rec_problem(s(v["problem"].as_str().unwrap_or("")));
+                ui.set_rec_backups(model(backups));
+                ui.set_rec_lost(s(""));
+                ui.set_rec_backup(s(""));
+            }
+            AdminThen::Lost(_, backup) => {
+                let after = v["after"].as_u64().unwrap_or(0);
+                let lost = v["records"].as_array().cloned().unwrap_or_default();
+                let text = if lost.is_empty() {
+                    format!("{backup} has every record (up to {after}); nothing is lost.")
+                } else {
+                    let list: Vec<String> = lost
+                        .iter()
+                        .take(12)
+                        .map(|r| {
+                            format!(
+                                "record {} ({}, {})",
+                                r["seq"],
+                                r["kind"].as_str().unwrap_or(""),
+                                r["when"].as_str().unwrap_or("")
+                            )
+                        })
+                        .collect();
+                    let more = if lost.len() > 12 {
+                        format!(" and {} more", lost.len() - 12)
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "Carrying on from {backup} keeps records up to {after}. Not in it, to be entered again: {}{more}. These are as the broken book has them, which can't be checked.",
+                        list.join(", ")
+                    )
+                };
+                self.rec_backup = Some(backup.clone());
+                ui.set_rec_backup(s(backup));
+                ui.set_rec_lost(s(text));
+            }
+            AdminThen::Done(_) | AdminThen::SaveText(_) => {}
         }
+    }
+
+    // ----- Hyperbook, Verify, recovery ------------------------------------------------------
+
+    fn refresh_hyperbook(&self, ui: &AppWindow) {
+        ui.set_is_hyperbook(self.hyperbook());
+        ui.set_restore_text(s(self
+            .restore
+            .as_ref()
+            .map(|o| o.text())
+            .unwrap_or_default()));
+        let head = self.records.last().map(sk_chain::Record::head);
+        ui.set_hb_head(s(
+            head.map_or("no records yet".into(), |h| format!("record {}", h.seq))
+        ));
+        ui.set_hb_fingerprint(s(head.map(|h| h.hash.to_hex()).unwrap_or_default()));
+        match self.seen {
+            Some((seq, at)) if at > 0 => {
+                let day = chrono::DateTime::from_timestamp_millis(at)
+                    .map(|d| d.with_timezone(&chrono::Local).date_naive())
+                    .unwrap_or(self.today);
+                ui.set_hb_seen(s(format!(
+                    "This device last saw record {seq} on {}.",
+                    day.format("%b %-d, %Y")
+                )));
+                let days = (self.today - day).num_days();
+                ui.set_hb_stale(s(if days > 30 {
+                    format!("It has been {days} days since this device last checked with the hub.")
+                } else {
+                    String::new()
+                }));
+            }
+            _ => {
+                ui.set_hb_seen(s(""));
+                ui.set_hb_stale(s(""));
+            }
+        }
+    }
+
+    pub fn save_checkpoint(&self, ui: &AppWindow) {
+        let Some(head) = self.records.last().map(sk_chain::Record::head) else {
+            return toast(ui, "Sync first.");
+        };
+        let book = self.cfg.book.as_ref().map_or("Book", |b| b.name.as_str());
+        let text = sk_chain::checkpoint::text(book, head, &self.today.to_string());
+        ui.set_checkpoint_qr(qr_image(&text));
+        ui.set_checkpoint_text(s(text));
+    }
+
+    pub fn save_checkpoint_file(&self, ui: &AppWindow) {
+        let text = ui.get_checkpoint_text().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let seq = self.records.last().map_or(0, |r| r.seq);
+        let jobs = self.jobs.clone();
+        crate::dialogs::save_file(
+            ui.window(),
+            "Save the checkpoint",
+            &format!("ShareKeep checkpoint record {seq}.txt"),
+            ("Text", &["txt"]),
+            move |path| {
+                if let Some(path) = path {
+                    let _ = jobs.send(Job::SaveText {
+                        path,
+                        text: text + "\r\n",
+                    });
+                }
+            },
+        );
+    }
+
+    pub fn check_checkpoint(&self, ui: &AppWindow) {
+        match sk_chain::checkpoint::parse(&ui.get_checkpoint_input()) {
+            Some(head) => {
+                ui.set_check_answer(s("Checking…"));
+                ui.set_check_ok(true);
+                let _ = self.jobs.send(Job::CheckCheckpoint(head));
+            }
+            None => {
+                ui.set_check_ok(false);
+                ui.set_check_answer(s("That doesn't read as a checkpoint: it needs the record number and the 64-character fingerprint."));
+            }
+        }
+    }
+
+    pub fn check_statement(&self, ui: &AppWindow) {
+        let jobs = self.jobs.clone();
+        crate::dialogs::open_file(
+            ui.window(),
+            "Check a statement",
+            ("PDF", &["pdf"]),
+            move |p| {
+                if let Some(p) = p {
+                    let _ = jobs.send(Job::HashFile(p));
+                }
+            },
+        );
+    }
+
+    pub fn verify(&self, ui: &AppWindow) {
+        if self.records.is_empty() {
+            return toast(ui, "Sync first.");
+        }
+        let a = sk_ledger::audit::audit(&self.records, self.hyperbook());
+        let mut text = Vec::new();
+        if let Some(h) = &a.history {
+            text.push("Has the history been changed?".to_string());
+            text.extend(h.lines.iter().cloned());
+            text.push(String::new());
+        }
+        text.push("Do the numbers add up?".into());
+        text.extend(a.numbers.lines.iter().cloned());
+        ui.set_verify_ok(a.numbers.ok && a.history.as_ref().is_none_or(|h| h.ok));
+        ui.set_verify_answer(s(text.join("\n")));
+    }
+
+    pub fn accept_restore(&self) {
+        if let Some(o) = self.restore.clone() {
+            let _ = self.jobs.send(Job::AcceptRestore(o));
+        }
+    }
+
+    pub fn export_csv(&self, ui: &AppWindow, first: &str) {
+        let Some(a) = self.agreement else { return };
+        let Ok(first) = first.parse::<NaiveDate>() else {
+            return;
+        };
+        let head = self
+            .hyperbook()
+            .then(|| self.records.last().map(sk_chain::Record::head))
+            .flatten();
+        match view::csv(&self.ledger, a, first, head) {
+            Ok((name, text)) => {
+                let jobs = self.jobs.clone();
+                crate::dialogs::save_file(
+                    ui.window(),
+                    "Export to a spreadsheet",
+                    &name,
+                    ("CSV", &["csv"]),
+                    move |path| {
+                        if let Some(path) = path {
+                            let _ = jobs.send(Job::SaveText { path, text });
+                        }
+                    },
+                );
+            }
+            Err(e) => toast(ui, &e),
+        }
+    }
+
+    fn unlock_body(ui: &AppWindow) -> Value {
+        let p = ui.get_unlock_password().to_string();
+        if p.is_empty() {
+            json!({})
+        } else {
+            json!({"password": p})
+        }
+    }
+
+    pub fn hub_recover(&self, ui: &AppWindow, file: &str) {
+        self.admin(
+            "POST",
+            format!("/admin/v1/books/{file}/recovery"),
+            Some(Self::unlock_body(ui)),
+            AdminThen::Recovery(file.to_string()),
+        );
+    }
+
+    pub fn hub_recover_pick(&self, ui: &AppWindow, backup: &str) {
+        let Some(file) = self.rec_file.clone() else {
+            return;
+        };
+        let mut body = Self::unlock_body(ui);
+        body["backup"] = json!(backup);
+        self.admin(
+            "POST",
+            format!("/admin/v1/books/{file}/lost"),
+            Some(body),
+            AdminThen::Lost(file, backup.to_string()),
+        );
+    }
+
+    pub fn hub_restore(&mut self, ui: &AppWindow) {
+        let (Some(file), Some(backup)) = (self.rec_file.clone(), self.rec_backup.clone()) else {
+            return;
+        };
+        let mut body = Self::unlock_body(ui);
+        body["backup"] = json!(backup);
+        self.admin(
+            "POST",
+            format!("/admin/v1/books/{file}/restore"),
+            Some(body),
+            AdminThen::Done(format!(
+                "Restored from {backup}. The broken book was kept, renamed. Each device is asked to accept the restore."
+            )),
+        );
+        self.hub_recover_cancel(ui);
+    }
+
+    pub fn hub_recover_cancel(&mut self, ui: &AppWindow) {
+        self.rec_file = None;
+        self.rec_backup = None;
+        ui.set_rec_file(s(""));
+        ui.set_rec_backups(model(Vec::new()));
+        ui.set_rec_lost(s(""));
+        ui.set_rec_backup(s(""));
+    }
+
+    pub fn hub_export_broken(&self, ui: &AppWindow) {
+        let Some(file) = self.rec_file.clone() else {
+            return;
+        };
+        let body = Self::unlock_body(ui);
+        let jobs = self.jobs.clone();
+        let stem = file.trim_end_matches(".sharekeep").to_string();
+        crate::dialogs::save_file(
+            ui.window(),
+            "Save the broken history",
+            &format!("{stem} broken history.txt"),
+            ("Text", &["txt"]),
+            move |path| {
+                if let Some(path) = path {
+                    let _ = jobs.send(Job::Admin {
+                        method: "POST",
+                        path: format!("/admin/v1/books/{file}/export-broken"),
+                        body: Some(body),
+                        then: AdminThen::SaveText(path),
+                    });
+                }
+            },
+        );
     }
 
     pub fn hub_status(&self) {
@@ -486,6 +849,7 @@ impl State {
                     .collect(),
             ));
         }
+        self.refresh_hyperbook(ui);
         self.refresh_expense(ui);
         self.refresh_payment(ui);
         self.refresh_rule(ui);
@@ -924,7 +1288,8 @@ impl State {
         });
     }
 
-    pub fn close_period(&self, first: &str) {
+    pub fn close_period(&mut self, first: &str) {
+        self.offer_checkpoint = true;
         if let Some(a) = self.agreement {
             self.send(Job::Send {
                 kind: "period-close".into(),

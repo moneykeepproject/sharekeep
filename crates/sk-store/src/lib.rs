@@ -718,6 +718,18 @@ impl Store {
         Ok(store)
     }
 
+    /// Open a book without checking its history, only to read it: a Hyperbook that won't open
+    /// (to list what a restore would lose, or export the broken history). Never used for a
+    /// book that's in use.
+    pub fn open_for_recovery(path: &Path, secret: Option<&Secret>) -> StoreResult<Store> {
+        match book_kind(path)? {
+            BookKind::Plain => Store::open_plain(path),
+            BookKind::Encrypted => {
+                Store::open_encrypted(path, secret.ok_or(StoreError::NeedsPassword)?)
+            }
+        }
+    }
+
     fn open_plain(path: &Path) -> StoreResult<Store> {
         let mut conn = Connection::open_with_flags(
             path,
@@ -1069,6 +1081,123 @@ impl Store {
     #[doc(hidden)]
     pub fn fail_next_save_for_tests(&mut self) {
         self.fail_next_save = true;
+    }
+}
+
+/// A backup as recovery lists it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BackupInfo {
+    pub file: String,
+    /// When the file was last written (ms since 1970).
+    pub modified: i64,
+    /// Its last record.
+    pub head: Option<Head>,
+    /// "ok", "broken" or "unreadable".
+    pub status: String,
+    /// The broken record, for "Also broken at record N".
+    pub broken_at: Option<u64>,
+    /// Why it can't be read.
+    pub problem: Option<String>,
+}
+
+/// The backups in `dir` of the book `book_id`, newest first, each checked.
+pub fn scan_backups(dir: &Path, book_id: &str, secret: Option<&Secret>) -> Vec<BackupInfo> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.extension().is_some_and(|x| x == EXTENSION) {
+            continue;
+        }
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let modified = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as i64);
+        let info = match Store::open_for_recovery(&path, secret) {
+            Ok(s) => {
+                if s.info().book_id != book_id {
+                    continue;
+                }
+                let head = s.head();
+                match s.verify() {
+                    Ok(_) => BackupInfo {
+                        file,
+                        modified,
+                        head,
+                        status: "ok".into(),
+                        broken_at: None,
+                        problem: None,
+                    },
+                    Err(StoreError::HistoryBroken(b)) => BackupInfo {
+                        file,
+                        modified,
+                        head,
+                        status: "broken".into(),
+                        broken_at: Some(b.at),
+                        problem: Some(b.to_string()),
+                    },
+                    Err(e) => BackupInfo {
+                        file,
+                        modified,
+                        head,
+                        status: "unreadable".into(),
+                        broken_at: None,
+                        problem: Some(e.to_string()),
+                    },
+                }
+            }
+            // another book's backup (or one we can't open with this password): not listed,
+            // unless it can't be told apart
+            Err(StoreError::NotABook) | Err(StoreError::WrongPassword) => continue,
+            Err(e) => BackupInfo {
+                file,
+                modified,
+                head: None,
+                status: "unreadable".into(),
+                broken_at: None,
+                problem: Some(e.to_string()),
+            },
+        };
+        out.push(info);
+    }
+    out.sort_by(|a, b| {
+        b.head
+            .map(|h| h.seq)
+            .cmp(&a.head.map(|h| h.seq))
+            .then(b.modified.cmp(&a.modified))
+    });
+    out
+}
+
+/// Move a broken book aside so it's clearly the broken one and no longer loads as a book:
+/// `<file> (broken <label>).sharekeep-broken`. Returns the new path.
+pub fn set_aside_broken(path: &Path, label: &str) -> StoreResult<PathBuf> {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Book".into());
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut n = 1;
+    loop {
+        let name = if n == 1 {
+            format!("{stem} (broken {label}).sharekeep-broken")
+        } else {
+            format!("{stem} (broken {label}) ({n}).sharekeep-broken")
+        };
+        let to = dir.join(name);
+        if !to.exists() {
+            std::fs::rename(path, &to).map_err(|e| io_err("rename", path, &e))?;
+            return Ok(to);
+        }
+        n += 1;
     }
 }
 

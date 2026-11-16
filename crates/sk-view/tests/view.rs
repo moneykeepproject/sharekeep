@@ -287,3 +287,101 @@ fn rules_by_room_days_and_usage() {
     let ex = view::examples(&d.rule(), &l, usd()).unwrap();
     assert!(ex[1].1[1].name.ends_with("used)"));
 }
+
+#[test]
+fn a_sealed_statement_is_recognised_by_its_fingerprint() {
+    use serde_json::json;
+    let mut records = sk_view::demo::records(today());
+    let ts = today()
+        .and_hms_opt(12, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis();
+    let jerry = sk_chain::Author {
+        member: Some(JERRY),
+        device: "t".into(),
+    };
+    let close = sk_chain::next(
+        records.last(),
+        ts,
+        jerry,
+        "period-close",
+        json!({"agreement": 1, "date": "2027-02-01"}),
+    )
+    .unwrap();
+    let head = close.head();
+    records.push(close);
+    let sha = "ab".repeat(32);
+    let seal = sk_chain::next(
+        records.last(),
+        ts,
+        sk_chain::Author::hub(),
+        sk_chain::SEAL,
+        sk_chain::seal_body(
+            1,
+            "2027-02-01",
+            "2027-02-28",
+            head,
+            sk_chain::Hash::from_hex(&sha),
+        ),
+    )
+    .unwrap();
+    records.push(seal);
+    let (l, skipped) = sk_ledger::Ledger::replay(&records);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    let (ok, msg) = view::check_statement(&l, &sha.to_uppercase());
+    assert!(ok, "{msg}");
+    assert!(msg.contains("Apartment, Feb 1 – Feb 28, 2027"), "{msg}");
+    assert!(msg.contains(&format!("record {}", head.seq)), "{msg}");
+    let (ok, _) = view::check_statement(&l, &"cd".repeat(32));
+    assert!(!ok);
+    assert_eq!(view::snapshot(&l, JERRY, usd(), today()).seals.len(), 1);
+}
+
+#[test]
+fn a_period_exports_as_csv_with_running_balances_and_the_head() {
+    let records = sk_view::demo::records(today());
+    let l = sk_view::demo::ledger(today());
+    let head = records.last().map(sk_chain::Record::head);
+    let first = NaiveDate::from_ymd_opt(2027, 3, 1).unwrap();
+    let (file, text) = view::csv(&l, A, first, head).unwrap();
+    assert_eq!(file, "Apartment 2027-03-01 to 2027-03-31.csv");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("Date,Record,What,Category,Paid by,Amount,Note,Jerry change"));
+    assert!(lines[1].contains("Opening balances"));
+    let closing = lines
+        .iter()
+        .find(|l| l.contains("Closing balances"))
+        .unwrap();
+    // the closing balances are today's balances, member by member, and add up to zero
+    let b = l.balances(A);
+    let cols: Vec<&str> = closing.split(',').collect();
+    let n = l.agreements[&A].members.len();
+    let bal: Vec<i64> = cols[cols.len() - n..]
+        .iter()
+        .map(|c| (c.parse::<f64>().unwrap() * 100.0).round() as i64)
+        .collect();
+    let want: Vec<i64> = l.agreements[&A].members.keys().map(|m| b.get(*m)).collect();
+    assert_eq!(bal, want);
+    assert_eq!(bal.iter().sum::<i64>(), 0);
+    assert!(lines
+        .last()
+        .unwrap()
+        .starts_with("# History at export: record "));
+}
+
+#[test]
+fn verify_answers_both_questions() {
+    let mut records = sk_view::demo::records(today());
+    let a = sk_ledger::audit::audit(&records, true);
+    assert!(a.history.as_ref().unwrap().ok);
+    assert!(a.numbers.ok, "{:?}", a.numbers.lines);
+    assert!(a.numbers.lines[0].starts_with("Yes."));
+    // change one amount: the chain catches it
+    let i = records.iter().position(|r| r.kind == "expense").unwrap();
+    records[i].body["amount"] = serde_json::json!(1);
+    let a = sk_ledger::audit::audit(&records, true);
+    assert!(!a.history.unwrap().ok);
+    // a plain book doesn't answer the first question
+    assert!(sk_ledger::audit::audit(&records, false).history.is_none());
+}

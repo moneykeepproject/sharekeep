@@ -84,6 +84,8 @@ fn main() {
     let mut st = State::new(std::env::temp_dir(), cfg, jobs, true);
     st.today = today;
     st.ledger = sk_ui::demo::ledger(today);
+    st.records = sk_ui::demo::records(today);
+    st.seen = st.records.last().map(|r| (r.seq, r.ts));
     st.hub_ledger = st.ledger.clone();
     st.agreement = Some(AgreementId(1));
     st.refresh(&ui);
@@ -162,7 +164,25 @@ fn main() {
     st.refused = vec!["expense: Sam left the agreement on Mar 1, so it can't include them.".into()];
     st.refresh(&ui);
     ui.set_page(4);
-    shot(&win, w, h, &p("21-settings"));
+    shot(&win, w, h * 2, &p("21-settings"));
+    st.save_checkpoint(&ui);
+    st.verify(&ui);
+    ui.set_check_ok(true);
+    ui.set_check_answer("On this device: Still in the history: record 31 has the same fingerprint.\nOn the hub: Still in the history: record 31 has the same fingerprint.".into());
+    shot(&win, w, h * 3, &p("22-settings-hyperbook"));
+    st.restore = Some(sk_client::RestoreOffer {
+        seq: 40,
+        when: today,
+        backup: "Home backup 2027-03-13.sharekeep".into(),
+        to_seq: 36,
+        lost_from: 37,
+        lost_to: 39,
+    });
+    st.refresh(&ui);
+    ui.set_page(1);
+    shot(&win, w, h, &p("23-restore-offer"));
+    st.restore = None;
+    st.refresh(&ui);
 
     // sheets
     ui.set_page(2);
@@ -218,6 +238,7 @@ fn main() {
         name: "Cabin".into(),
         detail: "encrypted".into(),
         encrypted: true,
+        broken: false,
     }])));
     ui.set_hub_devices(ModelRc::new(VecModel::from(vec![
         DeviceS {
@@ -251,4 +272,32 @@ fn main() {
     ui.set_hub_pin("4829".into());
     ui.set_new_book_name("Cabin".into());
     shot(&win, w, h * 2, &p("42-hub-no-book"));
+    // a broken Hyperbook: recovery
+    ui.set_hub_books(ModelRc::new(VecModel::from(vec![BookS {
+        file: "Home.sharekeep".into(),
+        name: "Home".into(),
+        detail: "Hyperbook · the history is broken at record 37".into(),
+        encrypted: false,
+        broken: true,
+    }])));
+    ui.set_rec_file("Home.sharekeep".into());
+    ui.set_rec_name("Home".into());
+    ui.set_rec_problem("The history is broken at record 37: its fingerprint doesn't match.".into());
+    ui.set_rec_backups(ModelRc::new(VecModel::from(vec![
+        BackupS {
+            file: "Home backup 2027-03-13.sharekeep".into(),
+            title: "Home backup 2027-03-13.sharekeep".into(),
+            detail: "Mar 13, 2027 08:02 · up to record 36 · checks out".into(),
+            ok: true,
+        },
+        BackupS {
+            file: "Home backup 2027-03-12.sharekeep".into(),
+            title: "Home backup 2027-03-12.sharekeep".into(),
+            detail: "Mar 12, 2027 19:40 · up to record 33 · checks out".into(),
+            ok: true,
+        },
+    ])));
+    ui.set_rec_backup("Home backup 2027-03-13.sharekeep".into());
+    ui.set_rec_lost("Carrying on from Home backup 2027-03-13.sharekeep keeps records up to 36. Not in it, to be entered again: record 37 (expense, 2027-03-13), record 38 (payment, 2027-03-14). These are as the broken book has them, which can't be checked.".into());
+    shot(&win, w, h * 2, &p("43-hub-recovery"));
 }

@@ -209,4 +209,19 @@ fn wire(ui: &AppWindow) {
     on!(on_hub_make_code, |st, u, id: i32| st.hub_make_code(u, id));
     on!(on_hub_remove_device, |st, _u, id: i32| st
         .hub_remove_device(id));
+    on!(on_save_checkpoint, |st, u| st.save_checkpoint(u));
+    on!(on_save_checkpoint_file, |st, u| st.save_checkpoint_file(u));
+    on!(on_check_checkpoint, |st, u| st.check_checkpoint(u));
+    on!(on_check_statement, |st, u| st.check_statement(u));
+    on!(on_verify, |st, u| st.verify(u));
+    on!(on_accept_restore, |st, _u| st.accept_restore());
+    on!(on_export_csv, |st, u, key: slint::SharedString| st
+        .export_csv(u, &key));
+    on!(on_hub_recover, |st, u, file: slint::SharedString| st
+        .hub_recover(u, &file));
+    on!(on_hub_recover_pick, |st, u, b: slint::SharedString| st
+        .hub_recover_pick(u, &b));
+    on!(on_hub_restore, |st, u| st.hub_restore(u));
+    on!(on_hub_recover_cancel, |st, u| st.hub_recover_cancel(u));
+    on!(on_hub_export_broken, |st, u| st.hub_export_broken(u));
 }

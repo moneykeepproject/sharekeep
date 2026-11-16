@@ -44,6 +44,17 @@ pub fn statement_pdf(s: &Statement, book: &str, currency: Currency) -> Result<Ve
         INK,
         0.0,
     );
+    // the history's head at closing: every saved or printed copy witnesses the history
+    w.para(
+        &format!(
+            "History at closing: record {} • fingerprint {}",
+            s.closed_by, s.closed_hash
+        ),
+        7.5,
+        false,
+        MUTED,
+        0.0,
+    );
 
     w.heading("Who owes whom");
     if s.settle.is_empty() {
@@ -206,6 +217,7 @@ mod tests {
             agreement_name: "Apartment".into(),
             period: DateSpan::new(d(1, 1), d(1, 31)).unwrap(),
             closed_by: 42,
+            closed_hash: "4fb9a7d544d82d55f05fdb3bab56d5c5345e5cfababd63eaa3f7d87e3ffd2489".into(),
             members: vec![MemberLine {
                 member: MemberId(1),
                 name: "Jerry".into(),
