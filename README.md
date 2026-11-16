@@ -3,9 +3,21 @@
 Keep a household's shared money: partners, roommates, or a parent and an adult child
 sharing a home. Part of the MoneyKeep family (Rust + Slint).
 
-**Status: in development.** Milestones 1–4c: the split engine, the Hyperbook chain, the book
-files, the household service and its client, the agreement engine and statement PDFs, the
-desktop app for Windows and macOS, and the web app for phones and PC browsers.
+**Status: in development, release-ready pieces in place.** Milestones 1–4d: the split engine,
+the Hyperbook chain, the book files, the household service and its client, the agreement
+engine and statement PDFs, the desktop app for Windows and macOS, the web app for phones and PC
+browsers, the hub as a Windows service or macOS daemon, installers and the release workflow.
+
+## Install
+
+- **Windows:** run `sharekeep-<version>-windows-x64-setup.exe`. On the one computer that keeps
+  the household's books, tick **Household hub on this computer**.
+- **Mac:** open the DMG and copy ShareKeep to Applications. On the hub Mac, open **Install the
+  household hub**.
+- **Phones and other computers' browsers:** on the hub computer, ShareKeep > Hub > pick a person:
+  scan the QR code.
+
+Give the hub computer a fixed address on the router (a DHCP reservation).
 
 ## Build & test
 
@@ -16,7 +28,7 @@ cargo run -p sk-chain --bin sk-verify -- history.jsonl   # check an exported Hyp
 cargo run -p sharekeep-app --example screens -- shots    # headless screenshots of every screen
 ```
 
-Trying it on one computer (until 4d makes the hub a service with an installer):
+Trying it on one computer from a checkout:
 
 ```sh
 cargo run -p sk-hub -- setup --data hubdata --address 192.168.1.20   # this computer's address
@@ -45,6 +57,8 @@ code. Other computers run `sharekeep` and type the hub's address, the code and t
 | `crates/sk-ui/` | The desktop app's screens (Slint, the Capture look). |
 | `crates/sk-webapp/` | The web app for phones and PC browsers (HTML, CSS, JavaScript), built into the hub. |
 | `apps/sharekeep-app/` | The desktop app (`sharekeep`) for Windows and macOS: a background worker for the hub, file dialogs, settings. |
+| `installer/`, `packaging/` | The Windows setup (NSIS), the Mac DMG, the scripts MoneyKeep Launcher's local mirror runs. |
+| `assets/` | The icon (SVG source, PNG, ICO, ICNS). |
 | `xtask/` | `cargo xtask ci`, `workflows`, `guards`. |
 | `docs/specs/` | What the implemented parts must do. |
 
@@ -58,7 +72,7 @@ code. Other computers run `sharekeep` and type the hub's address, the code and t
 | 4a (done) | `sk-ledger` (agreement engine), `sk-report` (statement PDFs), hub checks and seals |
 | 4b (done) | `sk-ui`, `sharekeep-app` (Windows, macOS) |
 | 4c (done) | `sk-view`, `sk-webapp` (phones and PC browsers) |
-| 4d | the hub as a service, OS-sealed keys, installers, release workflow, keep-launcher |
+| 4d (done) | the hub as a service, OS-sealed keys (Windows), installers, release workflow, keep-launcher entry |
 
 ## Licence
 

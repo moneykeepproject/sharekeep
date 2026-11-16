@@ -147,6 +147,7 @@ component SplitList inherits VerticalLayout {
 
 export component AppWindow inherits Window {
     title: "ShareKeep" + (root.book-name != "" ? " – " + root.book-name : "");
+    icon: @image-url("../../../assets/icon.png");
     preferred-width: 430px;
     preferred-height: 860px;
     min-width: 360px;

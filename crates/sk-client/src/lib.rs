@@ -10,6 +10,7 @@
 //!   contains it has been rewritten, and the copy is kept as it was.
 
 pub mod api;
+pub mod seal;
 pub mod tls;
 
 use api::{ErrorAnswer, PairAnswer, PairRequest, RecordsAnswer, SubmitRequest};

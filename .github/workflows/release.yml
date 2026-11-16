@@ -1,0 +1,118 @@
+# A DRAFT release with the Windows installer and the Mac DMG, which the owner checks and
+# publishes. Started by pushing a tag `v<version>` (on the `public` commit), or by hand
+# (Actions > release > Run workflow) with `macos: skip` for a Windows-only draft.
+#
+# The Mac job runs on the project's own Mac (runner group mac-release, environment
+# mac-release, which needs the owner's approval). Only this workflow may use it, and it never
+# runs on pull requests (`cargo xtask workflows` checks both).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, like 0.1.0 (the tag v<version> is made on this commit if missing)"
+        required: true
+      macos:
+        description: "The Mac DMG"
+        type: choice
+        options: [build, skip]
+        default: build
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        name: Version
+        shell: bash
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then v="${GITHUB_REF_NAME#v}"; else v="$INPUT"; fi
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then echo "bad version: $v"; exit 1; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          if ! gh release view "v$V" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "v$V" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+              --title "ShareKeep $V" \
+              --notes "ShareKeep $V. Windows: run the setup (choose \"Household hub\" on the one computer that keeps the books). Mac: open the DMG, copy ShareKeep to Applications; on the hub Mac, open \"Install the household hub\". The builds are not signed by a publisher yet: Windows SmartScreen asks once (More info > Run anyway); on the Mac, right-click > Open the first time."
+          fi
+
+  windows:
+    needs: draft
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (1.97.0)
+        shell: bash
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+      - name: Build
+        run: cargo build --release --locked -p sharekeep-app -p sk-hub
+      - name: Installer
+        shell: bash
+        env:
+          V: ${{ needs.draft.outputs.version }}
+        run: |
+          NSIS="/c/Program Files (x86)/NSIS/makensis.exe"
+          if [ ! -x "$NSIS" ]; then choco install nsis -y --no-progress; fi
+          cd installer/windows
+          "$NSIS" -V2 "-DVERSION=${V%%-*}" "-DFULLVERSION=$V" "-DBIN=..\\..\\target\\release" sharekeep.nsi
+          sha256sum "sharekeep-$V-windows-x64-setup.exe" > "sharekeep-$V-windows-x64-setup.exe.sha256"
+      - name: Upload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.draft.outputs.version }}
+        run: |
+          gh release upload "v$V" --repo "$GITHUB_REPOSITORY" --clobber \
+            "installer/windows/sharekeep-$V-windows-x64-setup.exe" \
+            "installer/windows/sharekeep-$V-windows-x64-setup.exe.sha256"
+
+  macos:
+    needs: draft
+    if: github.event_name == 'push' || inputs.macos == 'build'
+    runs-on:
+      group: mac-release
+      labels: [self-hosted, macOS]
+    environment: mac-release
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: cargo +1.97.0 build --release --locked -p sharekeep-app -p sk-hub
+      - name: DMG
+        env:
+          V: ${{ needs.draft.outputs.version }}
+        run: |
+          installer/macos/make-dmg.sh "$V" target/release
+          cd dist && for f in sharekeep-"$V"-macos-*.dmg; do shasum -a 256 "$f" > "$f.sha256"; done
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.draft.outputs.version }}
+        run: |
+          gh release upload "v$V" --repo "$GITHUB_REPOSITORY" --clobber dist/sharekeep-"$V"-macos-*.dmg*

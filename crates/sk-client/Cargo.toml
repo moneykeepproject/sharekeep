@@ -15,6 +15,11 @@ serde_json.workspace = true
 rustls.workspace = true
 getrandom.workspace = true
 sha2.workspace = true
+zeroize.workspace = true
+
+# DPAPI, to seal secrets before they are written (seal.rs).
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [dev-dependencies]
 tempfile.workspace = true

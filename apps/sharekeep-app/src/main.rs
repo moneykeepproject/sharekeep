@@ -1,7 +1,8 @@
 //! ShareKeep for Windows and macOS.
 //!
-//! `sharekeep` — the app. On the hub computer, `sharekeep --hub-data <folder>` (once; it is
-//! remembered) also shows the Hub tab, which manages the hub through its loopback port.
+//! `sharekeep` — the app. On the hub computer it also shows the Hub tab, which manages the
+//! hub through its loopback port: found in the installer's place, or given once with
+//! `--hub-data <folder>` (remembered).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -50,7 +51,13 @@ fn main() -> Result<(), slint::PlatformError> {
         cfg.hub_data = Some(PathBuf::from(h));
         let _ = cfg.save(&dir);
     }
-    let admin = cfg.hub_data.as_deref().and_then(hub_admin);
+    // the hub installed on this computer is found without --hub-data
+    let admin = cfg
+        .hub_data
+        .clone()
+        .or_else(config::default_hub_data)
+        .as_deref()
+        .and_then(hub_admin);
     let is_hub = admin.is_some();
 
     let ui = AppWindow::new()?;

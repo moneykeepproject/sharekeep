@@ -2,6 +2,7 @@ target/
 *.pdf
 *.bundle
 dist/
+dist/
 
 # Book side files (security-review-1 L10): the previous version kept on save and
 # half-written temporary copies.

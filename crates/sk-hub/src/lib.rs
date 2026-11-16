@@ -13,6 +13,7 @@ pub mod keys;
 pub mod pin;
 pub mod registry;
 pub mod server;
+pub mod service;
 pub mod util;
 pub mod wifi;
 
