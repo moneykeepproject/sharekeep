@@ -803,6 +803,9 @@ pub struct AgreementView {
     pub deposits: Vec<DepositRow>,
     pub recurring: Vec<RecurringRow>,
     pub next_recurring: u32,
+    /// People in the book but not (or no longer) in this agreement, who could join.
+    pub can_join: Vec<Person>,
+    pub next_deposit: sk_core::DepositId,
 }
 
 /// Everything a device's screens show, for `me` on `today`.
@@ -864,6 +867,18 @@ pub fn snapshot(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> Sn
                 deposits: deposits(l, a.id, me, cur),
                 recurring: recurring(l, a.id, cur),
                 next_recurring: a.recurring.keys().next_back().map_or(1, |k| k + 1),
+                can_join: l
+                    .members
+                    .iter()
+                    .filter(|(m, _)| a.members.get(m).is_none_or(|s| s.left.is_some()))
+                    .map(|(m, n)| Person {
+                        id: *m,
+                        name: n.clone(),
+                    })
+                    .collect(),
+                next_deposit: sk_core::DepositId(
+                    a.deposits.keys().next_back().map_or(1, |k| k.0 + 1),
+                ),
             }
         })
         .collect();

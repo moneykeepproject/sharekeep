@@ -338,10 +338,18 @@ function agreementPage(a) {
         h('p', { class: 'hint' }, 'Positive: the household owes them. Negative: they owe the household.')),
       h('div', { class: 'card' }, h('h2', {}, 'To settle up'),
         a.settle.length ? a.settle.map((s) => h('div', {}, s)) : h('p', { class: 'hint' }, 'Everyone is settled up.')),
-      a.deposits.length ? h('div', { class: 'card' }, h('h2', {}, 'Deposits and pots'),
+      h('div', { class: 'card' }, h('h2', {}, 'Deposits and pots'),
         a.deposits.map((d) => h('div', { class: 'row' },
           h('div', { class: 'grow' }, h('div', {}, d.label), h('p', { class: 'hint' }, d.kind + ' · ' + d.detail)),
-          h('strong', {}, d.balance)))) : null,
+          h('strong', {}, d.balance),
+          h('button', { class: 'link', onclick: () => payInSheet(a, d) }, 'Put in'))),
+        a.deposits.length ? null : h('p', { class: 'hint' }, 'A security deposit, a utilities deposit, or a pot the household pays bills from.'),
+        h('button', { class: 'btn secondary', onclick: () => depositSheet(a) }, '+ Deposit or pot')),
+      h('div', { class: 'card' }, h('h2', {}, 'Moving in and out'),
+        h('p', { class: 'hint' }, 'Someone joining starts sharing from the day they move in. Someone leaving gets a settlement to the day; everyone approves it first.'),
+        h('div', { class: 'row' },
+          a.can_join.length ? h('button', { class: 'btn secondary', onclick: () => joinSheet(a) }, 'Someone joins') : null,
+          h('button', { class: 'btn secondary', onclick: () => leaveSheet(a) }, 'Someone leaves'))),
     ];
   }
   if (S.tab === 'rules') {
@@ -545,6 +553,81 @@ function paymentSheet(a) {
         close();
         queue('payment', { agreement: a.id, date: S.view.today, from: p.from, to: p.to, amount });
       } }, 'Save'));
+  });
+}
+
+function depositSheet(a) {
+  const d = { label: '', kind: 'Held', holder: 'Landlord' };
+  openSheet('Deposit or pot', (body, close) => {
+    const kinds = h('div', {});
+    const holders = h('div', {});
+    const draw = () => {
+      kinds.replaceChildren(chipRow([{ id: 'Held', name: 'Held (paid back later)' }, { id: 'Spending', name: 'Pot (pays bills)' }], d.kind, (k) => {
+        d.kind = k; d.holder = k === 'Spending' ? 'HouseholdPot' : 'Landlord'; draw();
+      }));
+      holders.replaceChildren(chipRow([{ id: 'Landlord', name: 'Landlord' }, { id: 'Utility', name: 'Utility' }, { id: 'HouseholdPot', name: 'Household' }], d.holder, (k) => { d.holder = k; draw(); }));
+    };
+    draw();
+    body.append(
+      field('Name', '', (v) => { d.label = v; }, { placeholder: 'Rental security' }),
+      h('label', { class: 'field' }, 'Kind'), kinds,
+      h('label', { class: 'field' }, 'Who has the money'), holders,
+      h('button', { class: 'btn', onclick: async () => {
+        if (!d.label.trim()) return toast('Name it, like Rental security.');
+        const ok = await sendNow('deposit', {
+          op: 'create', agreement: a.id, id: a.next_deposit, kind: d.kind, label: d.label.trim(),
+          holder: d.holder, refundable: 'Yes',
+        });
+        if (ok) close();
+      } }, 'Add'));
+  });
+}
+
+function payInSheet(a, dep) {
+  const cur = S.view.currency;
+  let amount = '';
+  openSheet('Put money into ' + dep.label, (body, close) => {
+    body.append(
+      field('Amount', '', (v) => { amount = v; }, { inputmode: 'decimal', placeholder: '0.00' }),
+      h('p', { class: 'hint' }, 'What you paid in yourself. It counts as your part of it.'),
+      h('button', { class: 'btn', onclick: async () => {
+        const cents = parseAmount(amount, cur);
+        if (!cents) return toast('Type the amount, like 200.00.');
+        const ok = await sendNow('deposit', { op: 'pay-in', agreement: a.id, id: dep.id, member: S.member, amount: cents });
+        if (ok) close();
+      } }, 'Save'));
+  });
+}
+
+function joinSheet(a) {
+  const j = { member: a.can_join[0].id, date: S.view.today };
+  openSheet('Someone joins ' + a.name, (body, close) => {
+    const who = h('div', {});
+    const draw = () => who.replaceChildren(chipRow(a.can_join, j.member, (id) => { j.member = id; draw(); }));
+    draw();
+    body.append(h('label', { class: 'field' }, 'Who'), who,
+      h('p', { class: 'hint' }, 'Someone new to the household is added on the hub computer first.'),
+      field('Moving in on', j.date, (v) => { j.date = v; }, { type: 'date' }),
+      h('button', { class: 'btn', onclick: async () => {
+        const ok = await sendNow('member-join', { agreement: a.id, member: j.member, date: j.date });
+        if (ok) close();
+      } }, 'Save'));
+  });
+}
+
+function leaveSheet(a) {
+  const l = { member: S.member, date: S.view.today };
+  openSheet('Someone leaves ' + a.name, (body, close) => {
+    const who = h('div', {});
+    const draw = () => who.replaceChildren(chipRow(a.people, l.member, (id) => { l.member = id; draw(); }));
+    draw();
+    body.append(h('label', { class: 'field' }, 'Who'), who,
+      field('Last day', l.date, (v) => { l.date = v; }, { type: 'date' }),
+      h('p', { class: 'hint' }, 'Their share of bills stops after that day, and their settlement is worked out to the day once everyone approves.'),
+      h('button', { class: 'btn', onclick: async () => {
+        const ok = await sendNow('member-leave', { agreement: a.id, member: l.member, date: l.date });
+        if (ok) { close(); toast('Proposed. It takes effect once everyone approves.'); }
+      } }, 'Propose'));
   });
 }
 

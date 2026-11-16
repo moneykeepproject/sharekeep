@@ -114,7 +114,20 @@ try:
         pg.click('.sheet button.btn:has-text("Save")')
         time.sleep(1.0)
         assert pg.locator('#page h2:has-text("Due")').count() == 0, 'recorded: nothing due'
-        pg.click('#tabs >> text=Activity')
+        # a deposit: made, then Sam puts his part in; then a leave proposed
+        pg.click('#tabs >> text=Members')
+        pg.click('text=+ Deposit or pot')
+        pg.fill('.sheet label:has-text("Name") input', 'Rental security')
+        pg.click('.sheet button.btn:has-text("Add")')
+        pg.wait_for_selector('#page >> text=Rental security')
+        pg.click('#page button.link:has-text("Put in")')
+        pg.fill('.sheet label:has-text("Amount") input', '500.00')
+        pg.click('.sheet button.btn:has-text("Save")')
+        pg.wait_for_selector('#page >> text=$500.00')
+        pg.click('text=Someone leaves')
+        pg.click('.sheet button.btn:has-text("Propose")')
+        time.sleep(1.0)
+        pg.screenshot(path=f'{out}/13-members.png', full_page=True)
         # the wide PC browser
         pg.set_viewport_size({'width': 1200, 'height': 800})
         pg.click('#nav >> text=Home')

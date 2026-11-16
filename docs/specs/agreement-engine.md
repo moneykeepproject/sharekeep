@@ -86,6 +86,8 @@ shared by the members' stakes. Replaying the history gives the same amounts.
 
 ## Not yet
 
-Screens for creating deposits, special events, people joining or leaving, schedule changes and
-entry edits (the engine and the hub accept them; the hub computer and the web app will offer
-them next); the rule editor's other methods (exact amounts, itemized, by room, days, usage).
+Screens: the web app now creates deposits and pots, takes pay-ins, adds a person to an
+agreement and proposes a leave; still missing everywhere are special events, schedule changes,
+entry edits, buy-outs, deductions and refunds, and the rule editor's other methods (exact
+amounts, itemized, by room, days, usage). The desktop app shows deposits but doesn't create them
+yet. The engine and the hub accept all of these already.
