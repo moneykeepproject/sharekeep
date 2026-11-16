@@ -4,7 +4,9 @@
 'use strict';
 
 const SYNC_EVERY_MS = 30000;
-const METHODS = ['Equal', 'Percentages', 'Shares', 'By income', 'By room', 'By days present', 'By usage'];
+const METHODS = ['Equal', 'Percentages', 'Shares', 'By income', 'By room', 'By days present', 'By usage', 'Exact amounts', 'Itemized'];
+const EXACT = 7;
+const ITEMIZED = 8;
 // per method: has sliders, slider top, unit, a line of help (the desktop app's sk-view says the same)
 const METHOD_INFO = [
   { sliders: false },
@@ -14,6 +16,8 @@ const METHOD_INFO = [
   { sliders: true, max: 50, unit: ' (room size)', hint: "Each person's room: its size, or what it would rent for alone." },
   { sliders: false, hint: 'Each expense asks how many days each person was home in the period.' },
   { sliders: false, hint: "Each expense asks for each person's meter reading or usage count." },
+  { sliders: false, hint: 'Fixed amounts each time, like rent. One person takes whatever is left of each expense.' },
+  { sliders: false, hint: "Each expense asks for the receipt's lines and who shares each one. Tax and tip follow the lines." },
 ];
 
 // ----- small helpers -------------------------------------------------------------------------
@@ -830,7 +834,7 @@ function chipRow(people, chosen, pick) {
 
 function expenseSheet(a, due, editing) {
   const cur = S.view.currency;
-  const e = { amount: '', category: '', date: S.view.today, note: '', payer: S.member, event: null, needs: null, values: {} };
+  const e = { amount: '', category: '', date: S.view.today, note: '', payer: S.member, event: null, needs: null, values: {}, items: [] };
   if (editing) {
     const x = editing.expense;
     Object.assign(e, {
@@ -839,6 +843,7 @@ function expenseSheet(a, due, editing) {
     });
     for (const [m, v] of Object.entries(x.days || {})) e.values[m] = String(v);
     for (const [m, v] of Object.entries(x.usage || {})) e.values[m] = String(v);
+    e.items = (x.items || []).map((i) => ({ amount: formatPlain(i.amount, cur), members: i.members.slice() }));
   }
   if (due) {
     Object.assign(e, { amount: formatPlain(due.amount_cents, cur), category: due.category, date: due.date_iso, note: due.name });
@@ -858,14 +863,42 @@ function expenseSheet(a, due, editing) {
       // a rule by days or usage: what each person typed
       days: e.needs === 'days' ? numbers() : undefined,
       usage: e.needs === 'usage' ? numbers() : undefined,
+      items: e.needs === 'items' ? lines() : undefined,
     });
+    // receipt lines with an amount and someone to share them
+    const lines = () => e.items
+      .map((i) => ({ amount: parseAmount(i.amount, cur), members: i.members }))
+      .filter((i) => i.amount !== null && i.members.length);
     const numbers = () => Object.fromEntries(Object.entries(e.values)
       .filter(([, v]) => /^\d+$/.test(String(v).trim())).map(([m, v]) => [m, Number(v)]));
     const needsBox = h('div', {});
+    const drawItems = (n) => {
+      const list = h('div', {});
+      const redraw = () => list.replaceChildren(...e.items.map((it, i) => h('div', { class: 'line' },
+        h('div', { class: 'row' },
+          field('Line ' + (i + 1), it.amount, (v) => { it.amount = v; check(); }, { inputmode: 'decimal', placeholder: '0.00' }),
+          h('button', { class: 'link red', onclick: () => { e.items.splice(i, 1); redraw(); check(); } }, 'Remove')),
+        h('div', { class: 'chips' }, n.who.map((p) => h('button', {
+          class: 'chip' + (it.members.includes(p.id) ? ' on' : ''),
+          onclick: (ev) => {
+            it.members = it.members.includes(p.id) ? it.members.filter((m) => m !== p.id) : [...it.members, p.id];
+            ev.target.classList.toggle('on');
+            check();
+          },
+        }, p.name))))));
+      if (!e.items.length) e.items.push({ amount: '', members: [] });
+      redraw();
+      needsBox.replaceChildren(h('div', { class: 'card' },
+        h('h2', {}, n.rule + ": the receipt's lines"),
+        h('p', { class: 'hint' }, 'Tax, tip and fees (the amount minus the lines) are shared like the lines.'),
+        list,
+        h('button', { class: 'link', onclick: () => { e.items.push({ amount: '', members: [] }); redraw(); } }, '+ Line')));
+    };
     const drawNeeds = (n) => {
       if (!n) { e.needs = null; needsBox.replaceChildren(); return; }
       if (e.needs === n.kind && needsBox.childElementCount) return;
       e.needs = n.kind;
+      if (n.kind === 'items') { drawItems(n); if (e.items.some((i) => i.amount)) setTimeout(check, 0); return; }
       // values already there (an edit) count at once
       if (Object.keys(e.values).length) setTimeout(check, 0);
       needsBox.replaceChildren(h('div', { class: 'card' },
@@ -1101,13 +1134,21 @@ function recurringSheet(a) {
 function ruleSheet(a) {
   const d = {
     name: '', categories: '', method: 0,
-    rows: a.people.map((p) => ({ id: p.id, name: p.name, value: 1, included: true, locked: false })),
+    rows: a.people.map((p) => ({ id: p.id, name: p.name, value: 1, included: true, locked: false, amount: '', remainder: false })),
   };
   const setMethod = (m) => {
     d.method = m;
     const n = Math.max(1, d.rows.filter((r) => r.included).length);
-    for (const r of d.rows) { r.locked = false; r.value = m === 1 ? (r.included ? 100 / n : 0) : 1; }
+    for (const r of d.rows) { r.locked = false; r.value = m === 1 ? (r.included ? 100 / n : 0) : 1; r.amount = ''; r.remainder = false; }
     if (m === 1) roundPercent();
+    if (m === EXACT) fixRemainder();
+  };
+  // exact amounts: someone included always takes what's left (the last, unless chosen)
+  const fixRemainder = () => {
+    if (d.rows.some((r) => r.included && r.remainder)) return;
+    let last = -1;
+    d.rows.forEach((r, j) => { r.remainder = false; if (r.included) last = j; });
+    if (last >= 0) d.rows[last].remainder = true;
   };
   const roundPercent = () => {
     for (const r of d.rows) r.value = r.included ? Math.max(0, Math.round(r.value)) : 0;
@@ -1131,8 +1172,17 @@ function ruleSheet(a) {
   };
   const rule = () => {
     const weights = (scale) => Object.fromEntries(d.rows.map((r) => [String(r.id), Math.max(0, Math.round(r.value * scale))]));
+    const exact = () => {
+      const rem = d.rows.find((r) => r.included && r.remainder);
+      const amounts = {};
+      for (const r of d.rows) {
+        const c = parseAmount(r.amount || '0', S.view.currency);
+        if (r.included && r !== rem && c > 0) amounts[String(r.id)] = c;
+      }
+      return { Exact: { amounts, remainder: rem ? rem.id : 0 } };
+    };
     const method = [() => 'Equal', () => ({ Percent: weights(100) }), () => ({ Shares: weights(1) }), () => ({ Income: weights(1) }),
-      () => ({ Room: weights(1) }), () => 'Days', () => 'Usage'][d.method]();
+      () => ({ Room: weights(1) }), () => 'Days', () => 'Usage', exact, () => 'Itemized'][d.method]();
     return { name: d.name.trim(), method, members: d.rows.map((r) => r.id), excluded: d.rows.filter((r) => !r.included).map((r) => r.id) };
   };
   setMethod(0);
@@ -1162,9 +1212,20 @@ function ruleSheet(a) {
       rows.replaceChildren(h('h2', {}, pct ? 'Percentages (always total 100%)' : 'Who shares'),
         info.hint ? h('p', { class: 'hint' }, info.hint) : null, ...d.rows.map((r, i) => h('div', { class: 'slider' },
         h('div', { class: 'row' },
-          h('label', { class: 'switch grow' }, h('input', { type: 'checkbox', checked: r.included, onchange: () => { r.included = !r.included; if (pct) setMethod(1); draw(); } }), r.name),
+          h('label', { class: 'switch grow' }, h('input', { type: 'checkbox', checked: r.included, onchange: () => {
+            r.included = !r.included;
+            if (pct) setMethod(1);
+            if (d.method === EXACT) { if (!r.included) r.remainder = false; fixRemainder(); }
+            draw();
+          } }), r.name),
           h('span', {}, !r.included ? 'opted out' : info.sliders ? Math.round(r.value) + info.unit : ''),
-          pct && r.included ? h('button', { class: 'link' + (r.locked ? ' amber' : ''), onclick: () => { r.locked = !r.locked; draw(); } }, r.locked ? 'Locked' : 'Lock') : null),
+          pct && r.included ? h('button', { class: 'link' + (r.locked ? ' amber' : ''), onclick: () => { r.locked = !r.locked; draw(); } }, r.locked ? 'Locked' : 'Lock') : null,
+          d.method === EXACT && r.included ? h('button', { class: 'link' + (r.remainder ? ' green' : ''), onclick: () => {
+            for (const x of d.rows) x.remainder = x === r;
+            draw();
+          } }, r.remainder ? "Takes what's left" : "Give them what's left") : null),
+        d.method === EXACT && r.included && !r.remainder
+          ? field('Fixed amount', r.amount, (v) => { r.amount = v; refreshExamples(); }, { inputmode: 'decimal', placeholder: '0.00' }) : null,
         r.included && info.sliders ? h('input', {
           type: 'range', min: 0, max: info.max, step: 1, value: r.value, disabled: r.locked, 'aria-label': r.name,
           oninput: (e) => { setValue(i, Number(e.target.value)); draw(); },

@@ -48,6 +48,8 @@ try:
         'rule': {'name': 'Shared', 'method': 'Equal', 'members': [1, 2, 3]}}, member=1)
     rec('rule-proposal', {'agreement': 1, 'rule_id': 2, 'effective': first, 'categories': ['Heating'],
         'rule': {'name': 'Heating', 'method': 'Days', 'members': [1, 2, 3]}}, member=1)
+    rec('rule-proposal', {'agreement': 1, 'rule_id': 3, 'effective': first, 'categories': ['Takeout'],
+        'rule': {'name': 'Takeout', 'method': 'Itemized', 'members': [1, 2, 3]}}, member=1)
     code = admin('POST', 'pairing', {'book_id': book, 'member': 2})
     errors = []
     with sync_playwright() as p:
@@ -100,6 +102,17 @@ try:
         vals = pg.locator('.sheet .slider .row > span').all_inner_texts()
         print('percent rows', vals)
         pg.screenshot(path=f'{out}/05-rule.png', full_page=False)
+        # exact amounts: a fixed part each, one person takes what's left
+        pg.click('.sheet button.chip:has-text("Exact amounts")')
+        pg.wait_for_selector(".sheet >> text=Takes what's left")
+        pg.locator('.sheet label:has-text("Fixed amount") input').first.fill('800')
+        pg.wait_for_selector('.sheet .kv >> text=$800.00')
+        pg.screenshot(path=f'{out}/05b-rule-exact.png')
+        pg.click('.sheet button.chip:has-text("Itemized")')
+        pg.wait_for_selector('.sheet >> text=own lines')
+        pg.click('.sheet button.chip:has-text("Percentages")')
+        pg.locator('input[type=range]').first.fill('60')
+        time.sleep(0.6)
         pg.click('.sheet button.btn:has-text("Propose")')
         time.sleep(1)
         pg.click('#tabs >> text=Members')
@@ -190,6 +203,24 @@ try:
         pg.screenshot(path=f'{out}/15-days.png')
         pg.click('.sheet button.btn:has-text("Save")')
         pg.wait_for_selector('#page >> text=Heating')
+        # an itemized receipt: lines and who shares each; the tax follows the lines
+        pg.click('text=+ Expense')
+        pg.fill('.sheet label:has-text("Amount") input', '30.00')
+        pg.fill('.sheet label:has-text("Category") input', 'Takeout')
+        pg.wait_for_selector(".sheet >> text=the receipt's lines")
+        pg.fill('.sheet label:has-text("Line 1") input', '12.00')
+        pg.click('.sheet .line >> nth=0 >> button.chip:has-text("Jerry")')
+        pg.click('.sheet button.link:has-text("+ Line")')
+        pg.fill('.sheet label:has-text("Line 2") input', '15.00')
+        pg.click('.sheet .line >> nth=1 >> button.chip:has-text("Sam")')
+        pg.click('.sheet .line >> nth=1 >> button.chip:has-text("Alex")')
+        pg.wait_for_selector('.sheet .kv >> text=$13.33')
+        rows = pg.locator('.sheet .kv .v').all_inner_texts()
+        print('itemized', rows)
+        assert sum(round(float(r.strip('$')) * 100) for r in rows) == 3000, rows
+        pg.screenshot(path=f'{out}/15b-itemized.png')
+        pg.click('.sheet button.btn:has-text("Save")')
+        pg.wait_for_selector('#page >> text=Takeout')
         pg.click('#tabs >> text=Members')
         # a special event and a schedule change
         pg.click('#tabs >> text=Periods')

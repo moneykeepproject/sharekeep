@@ -89,3 +89,5 @@ h2.steptitle { font-size: 24px; }
 .box { background: #f1f5f9; border-radius: 8px; padding: 10px; user-select: all; }
 .sheet h3 { font-size: 15px; margin: 14px 0 6px; }
 textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; }
+.line { border-top: 1px solid #e2e8f0; padding-top: 8px; margin-top: 8px; }
+.link.green { color: #15803d; }

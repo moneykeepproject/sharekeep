@@ -210,6 +210,25 @@ fn wire(ui: &AppWindow) {
     on!(on_hub_remove_device, |st, _u, id: i32| st
         .hub_remove_device(id));
     on!(on_save_checkpoint, |st, u| st.save_checkpoint(u));
+    on!(on_open_form, |st, u, what: slint::SharedString| st
+        .open_form(u, &what));
+    on!(on_form_kind, |st, u, i: i32| st.form_kind(u, i));
+    on!(on_form_sub_picked, |st, u, i: i32| st.form_sub(u, i));
+    on!(on_form_person, |st, u, i: i32| st.form_person(u, i));
+    on!(on_form_person2, |st, u, i: i32| st.form_person2(u, i));
+    on!(on_form_save, |st, u| st.form_save(u));
+    on!(on_exp_item_add, |st, u| st.item_add(u));
+    on!(
+        on_exp_item_amount,
+        |st, u, i: i32, t: slint::SharedString| st.item_amount(u, i, &t)
+    );
+    on!(on_exp_item_member, |st, u, i: i32, m: i32| st
+        .item_member(u, i, m));
+    on!(on_exp_item_remove, |st, u, i: i32| st.item_remove(u, i));
+    on!(on_rule_amount, |st, u, i: i32, t: slint::SharedString| st
+        .rule_amount(u, i, &t));
+    on!(on_rule_remainder, |st, u, i: i32| st
+        .rule_edit(u, |d| d.set_remainder(i as usize)));
     on!(on_save_checkpoint_file, |st, u| st.save_checkpoint_file(u));
     on!(on_check_checkpoint, |st, u| st.check_checkpoint(u));
     on!(on_check_statement, |st, u| st.check_statement(u));

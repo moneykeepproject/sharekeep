@@ -10,7 +10,7 @@ use sk_core::{AgreementId, Currency, MemberId, RuleId};
 use sk_ledger::{Ledger, ProposalKind};
 use sk_ui::view::{self, RuleDraft, EDITOR_METHODS};
 use sk_ui::*;
-use slint::{Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, VecModel};
+use slint::{Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -36,6 +36,8 @@ pub struct State {
     pub exp_due: Option<view::ExpectedRow>,
     /// A rule by days or usage: its kind and each person's value as typed.
     pub exp_needs: Option<(String, Vec<NeedRow>)>,
+    /// An itemized rule: the receipt lines as typed (amount, who shares the line).
+    pub exp_items: Vec<(String, BTreeSet<MemberId>)>,
     /// The entry the expense sheet edits, and its body as it was.
     pub exp_edit: Option<(u64, sk_ledger::bodies::Expense)>,
     pub pending: usize,
@@ -67,13 +69,30 @@ pub struct State {
     rec_backup: Option<String>,
     /// After pairing or closing a period: suggest a checkpoint once the history arrives.
     offer_checkpoint: bool,
+    /// The form sheet's state.
+    pub form: Option<crate::forms::Form>,
 }
 
-fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
+pub(crate) fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
     ModelRc::new(VecModel::from(v))
 }
 
-fn s(t: impl AsRef<str>) -> SharedString {
+/// The same list with new rows: changed in place when the length is the same, so a row's
+/// text field isn't recreated (and doesn't lose the cursor) while someone types in it.
+fn same_rows<T: Clone + PartialEq + 'static>(current: ModelRc<T>, rows: Vec<T>) -> ModelRc<T> {
+    if current.row_count() == rows.len() && !rows.is_empty() {
+        for (i, r) in rows.into_iter().enumerate() {
+            if current.row_data(i).as_ref() != Some(&r) {
+                current.set_row_data(i, r);
+            }
+        }
+        current
+    } else {
+        model(rows)
+    }
+}
+
+pub(crate) fn s(t: impl AsRef<str>) -> SharedString {
     SharedString::from(t.as_ref())
 }
 
@@ -112,6 +131,7 @@ impl State {
             exp_due: None,
             exp_edit: None,
             exp_needs: None,
+            exp_items: Vec::new(),
             pending: 0,
             refused: Vec::new(),
             problem: None,
@@ -132,6 +152,7 @@ impl State {
             rec_file: None,
             rec_backup: None,
             offer_checkpoint: false,
+            form: None,
         }
     }
 
@@ -139,7 +160,7 @@ impl State {
         MemberId(self.cfg.member.unwrap_or(0))
     }
 
-    fn send(&self, job: Job) {
+    pub(crate) fn send(&self, job: Job) {
         // a restored backup waits for the person: nothing new is sent before they accept it
         if self.restore.is_some() && matches!(job, Job::Send { .. }) {
             return;
@@ -836,6 +857,21 @@ impl State {
             ui.set_members(model(members.into_iter().map(member_s).collect()));
             ui.set_settle(model(settle.into_iter().map(s).collect()));
             ui.set_schedule_text(s(view::schedule_text(l, a, self.today)));
+            ui.set_events(model(
+                view::events(l, a)
+                    .into_iter()
+                    .map(|e| EventS {
+                        name: s(e.name),
+                        detail: s(e.detail),
+                    })
+                    .collect(),
+            ));
+            ui.set_can_join(l.members.keys().any(|m| {
+                l.agreements
+                    .get(&a)
+                    .and_then(|g| g.members.get(m))
+                    .is_none_or(|ms| ms.left.is_some())
+            }));
             ui.set_periods(model(
                 view::periods(l, a, self.today, 5)
                     .into_iter()
@@ -850,6 +886,7 @@ impl State {
             ));
         }
         self.refresh_hyperbook(ui);
+        self.refresh_form(ui);
         self.refresh_expense(ui);
         self.refresh_payment(ui);
         self.refresh_rule(ui);
@@ -894,6 +931,7 @@ impl State {
         self.exp_due = None;
         self.exp_edit = None;
         self.exp_needs = None;
+        self.exp_items.clear();
         ui.set_exp_title(s("New expense"));
         ui.set_exp_amount(s(""));
         ui.set_exp_category(s(""));
@@ -970,7 +1008,25 @@ impl State {
             recurring: d.recurring,
             date: d.date_iso,
         });
-        if let Some((kind, values)) = &self.exp_needs {
+        if self.exp_needs.as_ref().is_some_and(|(k, _)| k == "items") {
+            for (i, (text, who)) in self.exp_items.iter().enumerate() {
+                if text.trim().is_empty() && who.is_empty() {
+                    continue;
+                }
+                let amount = self
+                    .cur
+                    .parse(text.trim())
+                    .ok_or(format!("Line {}: type its amount, like 4.99.", i + 1))?;
+                if who.is_empty() {
+                    return Err(format!("Line {}: pick who shares it.", i + 1));
+                }
+                e.items.push(sk_split::method::Item {
+                    amount,
+                    members: who.iter().copied().collect(),
+                });
+            }
+        }
+        if let Some((kind, values)) = self.exp_needs.as_ref().filter(|(k, _)| k != "items") {
             for (m, _, v) in values {
                 let Ok(n) = v.trim().parse::<u64>() else {
                     continue;
@@ -991,9 +1047,13 @@ impl State {
             };
             e.rule = old.rule;
             e.event = old.event;
-            e.items = old.items.clone();
-            e.days = old.days.clone();
-            e.usage = old.usage.clone();
+            // the sheet shows days, usage or lines when the rule asks for them; otherwise
+            // what the entry had stays
+            if self.exp_needs.is_none() {
+                e.items = old.items.clone();
+                e.days = old.days.clone();
+                e.usage = old.usage.clone();
+            }
             e.due = old.due;
         }
         Ok(e)
@@ -1013,25 +1073,84 @@ impl State {
             Some(n) => {
                 let keep = self.exp_needs.as_ref().is_some_and(|(k, _)| *k == n.kind);
                 if !keep {
+                    // an edit starts from what the entry had
+                    let old = self.exp_edit.as_ref().map(|(_, e)| e);
                     self.exp_needs = Some((
                         n.kind.clone(),
                         n.who
                             .iter()
-                            .map(|p| (p.id, p.name.clone(), String::new()))
+                            .map(|p| {
+                                let had = old.and_then(|e| match n.kind.as_str() {
+                                    "days" => e.days.get(&p.id).map(|v| v.to_string()),
+                                    "usage" => e.usage.get(&p.id).map(|v| v.to_string()),
+                                    _ => None,
+                                });
+                                (p.id, p.name.clone(), had.unwrap_or_default())
+                            })
                             .collect(),
                     ));
+                    self.exp_items = old
+                        .map(|e| {
+                            e.items
+                                .iter()
+                                .map(|i| {
+                                    (
+                                        self.cur.format_number(i.amount),
+                                        i.members.iter().copied().collect(),
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if n.kind == "items" && self.exp_items.is_empty() {
+                        self.exp_items.push((String::new(), BTreeSet::new()));
+                    }
                 }
-                ui.set_exp_needs_title(s(if n.kind == "days" {
-                    format!("{}: days each person was home", n.rule)
-                } else {
-                    format!("{}: each person's usage or meter reading", n.rule)
+                ui.set_exp_needs_title(s(match n.kind.as_str() {
+                    "days" => format!("{}: days each person was home", n.rule),
+                    "items" => format!(
+                        "{}: the receipt's lines. Tax, tip and fees (the amount minus the lines) are shared like the lines.",
+                        n.rule
+                    ),
+                    _ => format!("{}: each person's usage or meter reading", n.rule),
                 }));
             }
             None => self.exp_needs = None,
         }
-        ui.set_exp_needs(model(
+        let itemized = self.exp_needs.as_ref().is_some_and(|(k, _)| k == "items");
+        ui.set_exp_itemized(itemized);
+        let who: Vec<(MemberId, String)> = self
+            .exp_needs
+            .as_ref()
+            .map(|(_, v)| v.iter().map(|(m, n, _)| (*m, n.clone())).collect())
+            .unwrap_or_default();
+        ui.set_exp_items(same_rows(
+            ui.get_exp_items(),
+            if itemized {
+                self.exp_items
+                    .iter()
+                    .map(|(text, on)| ItemS {
+                        amount: s(text),
+                        members: model(
+                            who.iter()
+                                .map(|(m, n)| ChoiceS {
+                                    id: m.0 as i32,
+                                    label: s(n),
+                                    on: on.contains(m),
+                                })
+                                .collect(),
+                        ),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        ));
+        ui.set_exp_needs(same_rows(
+            ui.get_exp_needs(),
             self.exp_needs
                 .as_ref()
+                .filter(|(k, _)| k != "items")
                 .map(|(_, v)| {
                     v.iter()
                         .map(|(_, name, value)| NeedS {
@@ -1060,6 +1179,35 @@ impl State {
                 ui.set_exp_error(s(e));
             }
         }
+    }
+
+    pub fn item_add(&mut self, ui: &AppWindow) {
+        self.exp_items.push((String::new(), BTreeSet::new()));
+        self.refresh_expense(ui);
+    }
+
+    pub fn item_amount(&mut self, ui: &AppWindow, i: i32, text: &str) {
+        if let Some(l) = self.exp_items.get_mut(i as usize) {
+            l.0 = text.to_string();
+        }
+        self.refresh_expense(ui);
+    }
+
+    pub fn item_member(&mut self, ui: &AppWindow, i: i32, m: i32) {
+        if let Some(l) = self.exp_items.get_mut(i as usize) {
+            let m = MemberId(m as u32);
+            if !l.1.remove(&m) {
+                l.1.insert(m);
+            }
+        }
+        self.refresh_expense(ui);
+    }
+
+    pub fn item_remove(&mut self, ui: &AppWindow, i: i32) {
+        if (i as usize) < self.exp_items.len() {
+            self.exp_items.remove(i as usize);
+        }
+        self.refresh_expense(ui);
     }
 
     pub fn need_edited(&mut self, ui: &AppWindow, i: i32, text: &str) {
@@ -1163,6 +1311,12 @@ impl State {
 
     // ----- the rule editor -----
 
+    /// Exact amounts: a member's fixed amount as typed (blank or unreadable: none).
+    pub fn rule_amount(&mut self, ui: &AppWindow, i: i32, text: &str) {
+        let cents = self.cur.parse(text.trim()).unwrap_or(0);
+        self.rule_edit(ui, |d| d.set_amount(i as usize, cents));
+    }
+
     pub fn open_rule(&mut self, ui: &AppWindow) {
         let Some(a) = self.agreement else { return };
         self.draft = Some(RuleDraft::new(&self.ledger, a));
@@ -1197,6 +1351,7 @@ impl State {
                 .collect(),
         ));
         ui.set_rule_percent(d.method == 1);
+        ui.set_rule_exact(d.method == view::EXACT);
         ui.set_rule_weighted(view::method_weighted(d.method));
         ui.set_rule_max(view::method_max(d.method));
         ui.set_rule_unit(s(match d.method {
@@ -1210,9 +1365,12 @@ impl State {
             4 => "Each person's room: its size, or what it would rent for alone.",
             5 => "Each expense asks how many days each person was home in the period.",
             6 => "Each expense asks for each person's meter reading or usage count.",
+            view::EXACT => "Fixed amounts each time, like rent. One person takes whatever is left of each expense.",
+            view::ITEMIZED => "Each expense asks for the receipt's lines and who shares each one. Tax and tip follow the lines.",
             _ => "",
         }));
-        ui.set_rule_weights(model(
+        ui.set_rule_weights(same_rows(
+            ui.get_rule_weights(),
             d.rows
                 .iter()
                 .map(|r| WeightS {
@@ -1220,6 +1378,12 @@ impl State {
                     value: r.value,
                     included: r.included,
                     locked: r.locked,
+                    amount: s(if r.cents > 0 {
+                        self.cur.format_number(r.cents)
+                    } else {
+                        String::new()
+                    }),
+                    remainder: r.remainder,
                 })
                 .collect(),
         ));
@@ -1652,7 +1816,7 @@ fn split_s(r: view::SplitRow) -> SplitS {
     }
 }
 
-fn toast(ui: &AppWindow, msg: &str) {
+pub(crate) fn toast(ui: &AppWindow, msg: &str) {
     ui.set_toast(s(msg));
     let w = ui.as_weak();
     slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {

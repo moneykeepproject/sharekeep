@@ -4,4 +4,5 @@
 pub mod config;
 pub mod controller;
 pub mod dialogs;
+pub mod forms;
 pub mod worker;

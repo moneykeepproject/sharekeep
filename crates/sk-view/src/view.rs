@@ -409,7 +409,7 @@ pub fn expense_body(
 // ----- the rule editor ---------------------------------------------------------------------------
 
 /// The methods the editor's first version offers (the sliders' meaning per method).
-pub const EDITOR_METHODS: [&str; 7] = [
+pub const EDITOR_METHODS: [&str; 9] = [
     "Equal",
     "Percentages",
     "Shares",
@@ -417,7 +417,13 @@ pub const EDITOR_METHODS: [&str; 7] = [
     "By room",
     "By days present",
     "By usage",
+    "Exact amounts",
+    "Itemized",
 ];
+
+/// The editor index of "Exact amounts" and "Itemized".
+pub const EXACT: usize = 7;
+pub const ITEMIZED: usize = 8;
 
 /// Whether an editor method has a slider per member (equal, days and usage don't: days and
 /// usage are entered with each expense).
@@ -443,6 +449,10 @@ pub struct WeightRow {
     pub value: f32,
     pub included: bool,
     pub locked: bool,
+    /// Exact amounts: this member's fixed amount, in cents.
+    pub cents: Cents,
+    /// Exact amounts: this member takes whatever is left.
+    pub remainder: bool,
 }
 
 /// The rule being edited.
@@ -474,6 +484,8 @@ impl RuleDraft {
                 value: 1.0,
                 included: true,
                 locked: false,
+                cents: 0,
+                remainder: false,
             })
             .collect();
         let mut d = RuleDraft {
@@ -489,7 +501,10 @@ impl RuleDraft {
     pub fn set_method(&mut self, m: usize) {
         self.method = m.min(EDITOR_METHODS.len() - 1);
         let n = self.rows.iter().filter(|r| r.included).count().max(1) as f32;
-        for r in &mut self.rows {
+        let last = self.rows.iter().rposition(|r| r.included);
+        for (i, r) in self.rows.iter_mut().enumerate() {
+            r.cents = 0;
+            r.remainder = self.method == EXACT && Some(i) == last;
             r.locked = false;
             r.value = match self.method {
                 1 if r.included => 100.0 / n,
@@ -567,6 +582,29 @@ impl RuleDraft {
         if self.method == 1 {
             self.set_method(1);
         }
+        // the one who takes what's left must share in it
+        if self.method == EXACT && !self.rows.iter().any(|r| r.included && r.remainder) {
+            let last = self.rows.iter().rposition(|r| r.included);
+            for (j, r) in self.rows.iter_mut().enumerate() {
+                r.remainder = Some(j) == last;
+            }
+        }
+    }
+
+    /// Exact amounts: a member's fixed amount (whole cents).
+    pub fn set_amount(&mut self, i: usize, cents: Cents) {
+        if let Some(r) = self.rows.get_mut(i) {
+            r.cents = cents.max(0);
+        }
+    }
+
+    /// Exact amounts: who takes whatever is left of each expense.
+    pub fn set_remainder(&mut self, i: usize) {
+        if self.rows.get(i).is_some_and(|r| r.included) {
+            for (j, r) in self.rows.iter_mut().enumerate() {
+                r.remainder = j == i;
+            }
+        }
     }
 
     pub fn toggle_locked(&mut self, i: usize) {
@@ -591,6 +629,24 @@ impl RuleDraft {
             4 => Method::Room(weights(1.0)),
             5 => Method::Days,
             6 => Method::Usage,
+            EXACT => {
+                let remainder = self
+                    .rows
+                    .iter()
+                    .find(|r| r.included && r.remainder)
+                    .or_else(|| self.rows.iter().rfind(|r| r.included))
+                    .map_or(MemberId(0), |r| r.member);
+                Method::Exact {
+                    amounts: self
+                        .rows
+                        .iter()
+                        .filter(|r| r.included && r.member != remainder && r.cents > 0)
+                        .map(|r| (r.member, r.cents))
+                        .collect(),
+                    remainder,
+                }
+            }
+            ITEMIZED => Method::Itemized,
             _ => Method::Equal,
         };
         let mut rule = Rule::new(self.name.trim(), method, &members);
@@ -644,12 +700,45 @@ pub fn examples(
         .enumerate()
         .map(|(i, m)| (*m, [120, 80, 200, 50, 100][i % 5]))
         .collect();
+    // itemized: a sample receipt, one line for each person and one they all share; the
+    // amounts are the lines plus some tax or tip
+    let sample_items: Vec<sk_split::method::Item> = people
+        .iter()
+        .enumerate()
+        .map(|(i, m)| sk_split::method::Item {
+            amount: [1250, 899, 2075, 640, 1500][i % 5],
+            members: vec![*m],
+        })
+        .chain(std::iter::once(sk_split::method::Item {
+            amount: 1499,
+            members: people.iter().copied().collect(),
+        }))
+        .collect();
+    let items_total: Cents = sample_items.iter().map(|i| i.amount).sum();
     let note = |m: MemberId| match rule.method {
         Method::Days => format!(" ({} days)", sample_days.get(&m).copied().unwrap_or(0)),
         Method::Usage => format!(" ({} used)", sample_usage.get(&m).copied().unwrap_or(0)),
+        Method::Itemized => {
+            let own: Cents = sample_items
+                .iter()
+                .filter(|i| i.members == [m])
+                .map(|i| i.amount)
+                .sum();
+            format!(" (own lines {})", money(cur, own))
+        }
         _ => String::new(),
     };
-    EXAMPLE_AMOUNTS
+    // exact amounts: the fixed amounts plus each sample, so something is left over
+    let base: Cents = match &rule.method {
+        Method::Exact { amounts, .. } => amounts.values().sum(),
+        Method::Itemized => items_total,
+        _ => 0,
+    };
+    let samples: Vec<Cents> = match rule.method {
+        Method::Itemized => vec![base, base + 347, base + 1234],
+        _ => EXAMPLE_AMOUNTS.iter().map(|a| base + a).collect(),
+    };
+    samples
         .iter()
         .enumerate()
         .map(|(i, a)| {
@@ -660,6 +749,7 @@ pub fn examples(
                     seq: i as u64,
                     days: sample_days.clone(),
                     usage: sample_usage.clone(),
+                    items: sample_items.clone(),
                     ..Default::default()
                 },
             )
@@ -682,7 +772,7 @@ pub fn examples(
 /// present or usage, or nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Needs {
-    /// "days" or "usage"
+    /// "days", "usage" or "items" (receipt lines)
     pub kind: String,
     pub rule: String,
     pub who: Vec<Person>,
@@ -694,6 +784,7 @@ pub fn needs(l: &Ledger, e: &Expense) -> Option<Needs> {
     let kind = match r.rule.method {
         Method::Days => "days",
         Method::Usage => "usage",
+        Method::Itemized => "items",
         _ => return None,
     };
     Some(Needs {

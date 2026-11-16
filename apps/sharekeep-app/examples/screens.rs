@@ -208,6 +208,23 @@ fn main() {
     st.open_payment(&ui);
     shot(&win, w, h, &p("32-payment"));
     ui.set_pay_open(false);
+    st.open_form(&ui, "recurring");
+    ui.set_form_name("Internet".into());
+    ui.set_form_amount("70.00".into());
+    shot(&win, w, h, &p("35-form-recurring"));
+    st.open_form(&ui, "move:0");
+    st.form_kind(&ui, 1);
+    shot(&win, w, h, &p("36-form-buy-out"));
+    ui.set_form_open(false);
+    st.form = None;
+    st.open_rule(&ui);
+    ui.set_rule_name("Rent".into());
+    st.rule_edit(&ui, |d| {
+        d.set_method(sk_ui::view::EXACT);
+        d.set_amount(0, 80000);
+    });
+    shot(&win, w, h * 2, &p("34b-rule-exact"));
+    ui.set_rule_open(false);
     st.open_rule(&ui);
     ui.set_rule_name("Internet".into());
     st.rule_edit(&ui, |d| {

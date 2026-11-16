@@ -14,13 +14,15 @@ export struct PeriodS { key: string, label: string, state: string, closed: bool,
 export struct ApprovalS { seq: int, title: string, detail: string }
 export struct SplitS { name: string, amount: string }
 export struct ExampleS { amount: string, rows: [SplitS] }
-export struct WeightS { name: string, value: float, included: bool, locked: bool }
+export struct WeightS { name: string, value: float, included: bool, locked: bool, amount: string, remainder: bool }
 export struct ChoiceS { id: int, label: string, on: bool }
 export struct DeviceS { id: int, name: string, detail: string, revoked: bool }
 export struct DueS { name: string, date: string, detail: string, bill: bool, mine: bool, overdue: bool }
 export struct DepositS { label: string, kind: string, balance: string, detail: string }
 export struct RecurringS { id: int, name: string, detail: string, stopped: bool }
 export struct NeedS { name: string, value: string }
+export struct EventS { name: string, detail: string }
+export struct ItemS { amount: string, members: [ChoiceS] }
 export struct BookS { file: string, name: string, detail: string, encrypted: bool, broken: bool }
 export struct BackupS { file: string, title: string, detail: string, ok: bool }
 
@@ -263,6 +265,8 @@ export component AppWindow inherits Window {
     // a rule by days or usage: one field per person
     in property <string> exp-needs-title;
     in property <[NeedS]> exp-needs;
+    in property <bool> exp-itemized;
+    in property <[ItemS]> exp-items;
 
     // the payment sheet
     in-out property <bool> pay-open;
@@ -277,6 +281,37 @@ export component AppWindow inherits Window {
     in-out property <string> rule-categories;
     in property <[ChoiceS]> rule-methods;
     in property <[WeightS]> rule-weights;
+    in property <bool> rule-exact;
+
+    // one form sheet for the agreement's other changes (deposits, recurring bills, events,
+    // the schedule, joining and leaving): the controller sets which fields it shows
+    in-out property <bool> form-open;
+    in property <string> form-title;
+    in property <string> form-hint;
+    in property <string> form-error;
+    in property <string> form-save-text: "Save";
+    in property <string> form-kinds-label;
+    in property <[ChoiceS]> form-kinds;
+    in property <string> form-sub-label;
+    in property <[ChoiceS]> form-sub;
+    in property <string> form-name-label;
+    in-out property <string> form-name;
+    in property <string> form-name-placeholder;
+    in property <string> form-amount-label;
+    in-out property <string> form-amount;
+    in property <string> form-text-label;
+    in-out property <string> form-text;
+    in property <string> form-text-placeholder;
+    in property <string> form-date-label;
+    in-out property <string> form-date;
+    in property <string> form-date2-label;
+    in-out property <string> form-date2;
+    in property <string> form-people-label;
+    in property <[ChoiceS]> form-people;
+    in property <string> form-people2-label;
+    in property <[ChoiceS]> form-people2;
+    in property <[EventS]> events;
+    in property <bool> can-join;
     in property <bool> rule-percent;
     in property <bool> rule-weighted;
     in property <float> rule-max: 10;
@@ -338,6 +373,18 @@ export component AppWindow inherits Window {
     callback add-expense();
     callback expense-changed();
     callback exp-need-edited(int, string);
+    callback exp-item-add();
+    callback exp-item-amount(int, string);
+    callback exp-item-member(int, int);
+    callback exp-item-remove(int);
+    callback rule-amount(int, string);
+    callback open-form(string);
+    callback form-kind(int);
+    callback form-sub-picked(int);
+    callback form-person(int);
+    callback form-person2(int);
+    callback form-save();
+    callback rule-remainder(int);
     callback payer-picked(int);
     callback save-expense();
     callback add-payment();
@@ -612,15 +659,32 @@ export component AppWindow inherits Window {
                         for s in root.settle: Text { text: s; color: Theme.ink; wrap: word-wrap; }
                         if root.settle.length == 0: Hint { text: "Everyone is settled up."; }
                     }
-                    if root.deposits.length > 0: Card {
+                    Card {
                         SectionTitle { text: "Deposits and pots"; }
-                        for d in root.deposits: HorizontalLayout {
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text { text: d.label; color: Theme.ink; }
-                                Hint { text: d.kind + " · " + d.detail; }
+                        for d[i] in root.deposits: VerticalLayout {
+                            HorizontalLayout {
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    Text { text: d.label; color: Theme.ink; }
+                                    Hint { text: d.kind + " · " + d.detail; }
+                                }
+                                Text { text: d.balance; font-weight: 700; color: Theme.ink; vertical-alignment: center; }
                             }
-                            Text { text: d.balance; font-weight: 700; color: Theme.ink; vertical-alignment: center; }
+                            HorizontalLayout {
+                                alignment: end;
+                                LinkButton { text: "Put money in"; clicked => { root.open-form("pay-in:" + i); } }
+                                if d.kind == "Held": LinkButton { text: "Paid back / bought out"; clicked => { root.open-form("move:" + i); } }
+                            }
+                        }
+                        if root.deposits.length == 0: Hint { text: "A security deposit, a utility deposit, or a pot the household pays bills from."; }
+                        LinkButton { text: "+ Deposit or pot"; clicked => { root.open-form("deposit"); } }
+                    }
+                    Card {
+                        SectionTitle { text: "Moving in and out"; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            if root.can-join: BigButton { text: "Someone joins"; primary: false; clicked => { root.open-form("join"); } }
+                            BigButton { text: "Someone leaves"; primary: false; clicked => { root.open-form("leave"); } }
                         }
                     }
                 }
@@ -644,14 +708,24 @@ export component AppWindow inherits Window {
                             }
                             if !r.stopped: LinkButton { text: "Stop"; fg: Theme.red; clicked => { root.stop-recurring(r.id); } }
                         }
-                        if root.recurring.length == 0: Hint { text: "None yet. Add them from the ShareKeep page on a phone or browser (Rules > + Recurring bill); each shows under Due when it's due."; }
+                        if root.recurring.length == 0: Hint { text: "None yet. Each shows under Due when it's due, until someone records it with the real amount."; }
+                        LinkButton { text: "+ Recurring bill"; clicked => { root.open-form("recurring"); } }
                     }
                 }
                 if root.tab == 3: Page {
                     Card {
                         SectionTitle { text: "Settling up"; }
                         Text { text: root.schedule-text; color: Theme.ink; wrap: word-wrap; }
-                        Hint { text: "Change it, or add a special event (a trip, a party), from the ShareKeep page on a phone or browser: Periods."; }
+                        LinkButton { text: "Change how often"; clicked => { root.open-form("schedule"); } }
+                    }
+                    Card {
+                        SectionTitle { text: "Special events"; }
+                        Hint { text: "A trip or a party settles on its own, apart from the everyday bills."; }
+                        for e in root.events: VerticalLayout {
+                            Text { text: e.name; color: Theme.ink; }
+                            Hint { text: e.detail; }
+                        }
+                        LinkButton { text: "+ Special event"; clicked => { root.open-form("event"); } }
                     }
                     for p in root.periods: Card {
                         stripe: p.closed ? Theme.line : p.can-close ? Theme.amber-line : Theme.accent;
@@ -856,6 +930,19 @@ export component AppWindow inherits Window {
         Field { label: "Note (optional)"; text <=> root.exp-note; }
         FieldLabel { text: "Paid by"; }
         ChipStrip { chips: root.exp-payers; picked(id) => { root.payer-picked(id); } }
+        if root.exp-itemized: Card {
+            SectionTitle { text: root.exp-needs-title; }
+            for it[i] in root.exp-items: VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Field { label: "Line " + (i + 1); placeholder: "0.00"; number: true; text: it.amount; edited(t) => { root.exp-item-amount(i, t); } }
+                    LinkButton { text: "Remove"; fg: Theme.red; clicked => { root.exp-item-remove(i); } }
+                }
+                ChipStrip { chips: it.members; picked(id) => { root.exp-item-member(i, id); } }
+            }
+            LinkButton { text: "+ Line"; clicked => { root.exp-item-add(); } }
+        }
         if root.exp-needs.length > 0: Card {
             SectionTitle { text: root.exp-needs-title; }
             for n[i] in root.exp-needs: Field {
@@ -886,6 +973,28 @@ export component AppWindow inherits Window {
         BigButton { text: "Save"; clicked => { root.save-payment(); } }
     }
 
+    // ----- the form sheet -----
+    if root.form-open: Sheet {
+        title: root.form-title;
+        dismissed => { root.form-open = false; }
+        if root.form-kinds-label != "": FieldLabel { text: root.form-kinds-label; }
+        if root.form-kinds-label != "": ChipStrip { chips: root.form-kinds; picked(id) => { root.form-kind(id); } }
+        if root.form-name-label != "": Field { label: root.form-name-label; placeholder: root.form-name-placeholder; text <=> root.form-name; }
+        if root.form-amount-label != "": Field { label: root.form-amount-label; placeholder: "0.00"; number: true; text <=> root.form-amount; }
+        if root.form-sub-label != "": FieldLabel { text: root.form-sub-label; }
+        if root.form-sub-label != "": ChipStrip { chips: root.form-sub; picked(id) => { root.form-sub-picked(id); } }
+        if root.form-text-label != "": Field { label: root.form-text-label; placeholder: root.form-text-placeholder; text <=> root.form-text; }
+        if root.form-date-label != "": Field { label: root.form-date-label; placeholder: "YYYY-MM-DD"; text <=> root.form-date; }
+        if root.form-date2-label != "": Field { label: root.form-date2-label; placeholder: "YYYY-MM-DD"; text <=> root.form-date2; }
+        if root.form-people-label != "": FieldLabel { text: root.form-people-label; }
+        if root.form-people-label != "": ChipStrip { chips: root.form-people; picked(id) => { root.form-person(id); } }
+        if root.form-people2-label != "": FieldLabel { text: root.form-people2-label; }
+        if root.form-people2-label != "": ChipStrip { chips: root.form-people2; picked(id) => { root.form-person2(id); } }
+        if root.form-hint != "": Hint { text: root.form-hint; }
+        if root.form-error != "": Text { text: root.form-error; color: Theme.red; wrap: word-wrap; }
+        BigButton { text: root.form-save-text; clicked => { root.form-save(); } }
+    }
+
     // ----- the rule editor -----
     if root.rule-open: Sheet {
         title: "Propose a rule";
@@ -910,7 +1019,9 @@ export component AppWindow inherits Window {
                         horizontal-stretch: 1;
                     }
                     if root.rule-percent && w.included: LinkButton { text: w.locked ? "Locked" : "Lock"; fg: w.locked ? Theme.amber : Theme.accent; clicked => { root.rule-lock(i); } }
+                    if root.rule-exact && w.included: LinkButton { text: w.remainder ? "Takes what's left" : "Give them what's left"; fg: w.remainder ? Theme.green : Theme.accent; clicked => { root.rule-remainder(i); } }
                 }
+                if root.rule-exact && w.included && !w.remainder: Field { label: "Fixed amount"; placeholder: "0.00"; number: true; text: w.amount; edited(t) => { root.rule-amount(i, t); } }
                 if w.included && root.rule-weighted: Slider {
                     minimum: 0;
                     maximum: root.rule-max;

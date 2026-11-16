@@ -385,3 +385,47 @@ fn verify_answers_both_questions() {
     // a plain book doesn't answer the first question
     assert!(sk_ledger::audit::audit(&records, false).history.is_none());
 }
+
+#[test]
+fn exact_amounts_and_itemized_rules_from_the_editor() {
+    let l = sk_view::demo::ledger(today());
+    let mut d = RuleDraft::new(&l, A);
+    d.name = "Rent".into();
+    d.set_method(view::EXACT);
+    // the last person takes what's left, until someone else is chosen
+    assert!(d.rows.last().unwrap().remainder);
+    d.set_amount(0, 80000);
+    d.set_amount(1, 45050);
+    d.set_remainder(1);
+    let rule = d.rule();
+    let ex = view::examples(&rule, &l, usd()).unwrap();
+    // each sample is the fixed amounts plus something left over, which goes to the remainder
+    let (amount, rows) = &ex[0];
+    // the one taking what's left has no fixed amount of their own
+    assert_eq!(amount, "$883.47");
+    assert_eq!(rows[0].amount, "$800.00");
+    let cents = |t: &str| {
+        (t.trim_start_matches('$')
+            .replace(',', "")
+            .parse::<f64>()
+            .unwrap()
+            * 100.0)
+            .round() as i64
+    };
+    assert_eq!(rows.iter().map(|r| cents(&r.amount)).sum::<i64>(), 88347);
+    // someone opted out can't take the remainder; another included member does
+    d.toggle_included(1);
+    assert!(d.rows.iter().any(|r| r.included && r.remainder));
+    assert!(view::examples(&d.rule(), &l, usd()).is_ok());
+
+    d.set_method(view::ITEMIZED);
+    let ex = view::examples(&d.rule(), &l, usd()).unwrap();
+    assert_eq!(ex.len(), 3);
+    assert!(ex[0].1[0].name.contains("own lines"));
+    for (amount, rows) in &ex {
+        assert_eq!(
+            rows.iter().map(|r| cents(&r.amount)).sum::<i64>(),
+            cents(amount)
+        );
+    }
+}
