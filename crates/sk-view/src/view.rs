@@ -114,6 +114,8 @@ pub struct ActivityRow {
     pub amount: String,
     pub disputed: bool,
     pub editable: bool,
+    /// An expense's record body, for editing it.
+    pub expense: Option<Expense>,
 }
 
 /// An agreement's entries, newest first.
@@ -144,6 +146,11 @@ pub fn activity(l: &Ledger, a: AgreementId, me: MemberId, cur: Currency) -> Vec<
                         .unwrap_or_else(|| "the pot".into()),
                 };
                 let mine = shares.get(&me).copied().unwrap_or(0);
+                let event = expense
+                    .event
+                    .and_then(|id| l.agreements.get(&a).and_then(|g| g.events.get(&id)))
+                    .map(|ev| format!(" · {}", ev.name))
+                    .unwrap_or_default();
                 ActivityRow {
                     seq: e.seq,
                     date: e.date.format("%b %-d").to_string(),
@@ -152,10 +159,11 @@ pub fn activity(l: &Ledger, a: AgreementId, me: MemberId, cur: Currency) -> Vec<
                         .clone()
                         .filter(|n| !n.trim().is_empty())
                         .unwrap_or_else(|| expense.category.clone()),
-                    detail: format!("Paid by {by} · your share {}", money(cur, mine)),
+                    detail: format!("Paid by {by} · your share {}{event}", money(cur, mine)),
                     amount: money(cur, expense.amount),
                     disputed: e.disputed,
                     editable: !closed(e.date),
+                    expense: Some(expense.clone()),
                 }
             }
             EntryKind::Payment(p) => ActivityRow {
@@ -166,6 +174,7 @@ pub fn activity(l: &Ledger, a: AgreementId, me: MemberId, cur: Currency) -> Vec<
                 amount: money(cur, p.amount),
                 disputed: e.disputed,
                 editable: false,
+                expense: None,
             },
         })
         .collect();
@@ -781,6 +790,112 @@ pub fn recurring(l: &Ledger, a: AgreementId, cur: Currency) -> Vec<RecurringRow>
         .unwrap_or_default()
 }
 
+/// A special event (a trip, a party): its expenses settle on their own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EventRow {
+    pub id: u32,
+    pub name: String,
+    pub first: NaiveDate,
+    pub last: NaiveDate,
+    pub detail: String,
+}
+
+pub fn events(l: &Ledger, a: AgreementId) -> Vec<EventRow> {
+    l.agreements
+        .get(&a)
+        .map(|g| {
+            g.events
+                .iter()
+                .map(|(id, ev)| EventRow {
+                    id: *id,
+                    name: ev.name.clone(),
+                    first: ev.span.first,
+                    last: ev.span.last,
+                    detail: format!(
+                        "{} · {}",
+                        period_text(&ev.span),
+                        ev.members
+                            .iter()
+                            .map(|m| name(l, *m))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// How often an agreement settles up, in words, with a change that's waiting for the
+/// current period to end.
+pub fn schedule_text(l: &Ledger, a: AgreementId, today: NaiveDate) -> String {
+    let Some(g) = l.agreements.get(&a) else {
+        return String::new();
+    };
+    let versions = g.schedule.versions();
+    // the version in force today (a change waits for the current period to end)
+    let now = versions
+        .iter()
+        .rposition(|v| v.start() <= today)
+        .unwrap_or(0);
+    let mut text = versions.get(now).map(describe).unwrap_or_default();
+    if let Some(next) = versions.get(now + 1) {
+        text.push_str(&format!(". From {}: {}", next.start().format("%b %-d"), {
+            // "Every 2 weeks…" reads on after a colon as "every 2 weeks…"
+            let d = describe(next);
+            let mut c = d.chars();
+            c.next()
+                .map(|f| f.to_lowercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
+        }));
+    }
+    text
+}
+
+fn describe(s: &sk_split::periods::Schedule) -> String {
+    use sk_split::periods::{MonthDay, Schedule};
+    match s {
+        Schedule::Weekly { weekday, every, .. } => {
+            let day = [
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+                "Sunday",
+            ][weekday.num_days_from_monday() as usize];
+            match every {
+                1 => format!("Every week, on {day}"),
+                n => format!("Every {n} weeks, on {day}"),
+            }
+        }
+        Schedule::Monthly { day, every, .. } => {
+            let d = match day {
+                MonthDay::Day(d) => format!("the {}", ordinal(u32::from(*d))),
+                MonthDay::Last => "the last day".into(),
+            };
+            match every {
+                1 => format!("Every month, on {d}"),
+                n => format!("Every {n} months, on {d}"),
+            }
+        }
+        Schedule::EveryNDays { days, .. } => format!("Every {days} days"),
+        Schedule::Custom { .. } => "On dates chosen by hand".into(),
+    }
+}
+
+fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (1, 11) | (2, 12) | (3, 13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
 /// One agreement's screens.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgreementView {
@@ -806,6 +921,10 @@ pub struct AgreementView {
     /// People in the book but not (or no longer) in this agreement, who could join.
     pub can_join: Vec<Person>,
     pub next_deposit: sk_core::DepositId,
+    pub events: Vec<EventRow>,
+    pub next_event: u32,
+    /// "Every month, on the 1st"
+    pub schedule: String,
 }
 
 /// Everything a device's screens show, for `me` on `today`.
@@ -879,6 +998,9 @@ pub fn snapshot(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> Sn
                 next_deposit: sk_core::DepositId(
                     a.deposits.keys().next_back().map_or(1, |k| k.0 + 1),
                 ),
+                events: events(l, a.id),
+                next_event: a.events.keys().next_back().map_or(1, |k| k + 1),
+                schedule: schedule_text(l, a.id, today),
             }
         })
         .collect();

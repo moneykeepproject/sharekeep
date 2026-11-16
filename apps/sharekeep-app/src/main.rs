@@ -180,6 +180,7 @@ fn wire(ui: &AppWindow) {
     on!(on_statement, |st, u, key: slint::SharedString| st
         .statement(u, key.to_string()));
     on!(on_delete_entry, |st, _u, seq: i32| st.delete_entry(seq));
+    on!(on_edit_entry, |st, u, seq: i32| st.edit_entry(u, seq));
     on!(on_dispute_entry, |st, _u, seq: i32| st.dispute_entry(seq));
     on!(on_dismiss_refused, |st, _u| st.dismiss_refused());
     on!(on_record_due, |st, u, i: i32| st.record_due(u, i));

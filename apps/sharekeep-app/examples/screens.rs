@@ -177,6 +177,14 @@ fn main() {
     st.refresh(&ui);
     shot(&win, w, h, &p("31-expense-error"));
     ui.set_exp_open(false);
+    let tj = sk_ui::view::activity(&st.ledger, AgreementId(1), sk_core::MemberId(1), st.cur)
+        .into_iter()
+        .find(|r| r.title == "Trader Joe's")
+        .unwrap()
+        .seq;
+    st.edit_entry(&ui, tj as i32);
+    shot(&win, w, h, &p("30b-expense-edit"));
+    ui.set_exp_open(false);
     st.open_payment(&ui);
     shot(&win, w, h, &p("32-payment"));
     ui.set_pay_open(false);

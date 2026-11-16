@@ -249,6 +249,8 @@ export component AppWindow inherits Window {
 
     // the expense sheet
     in-out property <bool> exp-open;
+    in property <string> exp-title: "New expense";
+    in property <string> schedule-text;
     in-out property <string> exp-amount;
     in-out property <string> exp-category;
     in-out property <string> exp-date;
@@ -321,6 +323,7 @@ export component AppWindow inherits Window {
     callback close-period(string);
     callback statement(string);
     callback delete-entry(int);
+    callback edit-entry(int);
     callback dispute-entry(int);
     callback dismiss-refused();
     callback record-due(int);
@@ -538,6 +541,7 @@ export component AppWindow inherits Window {
                         }
                         if a.editable: HorizontalLayout {
                             alignment: end;
+                            if a.title != "Payment": LinkButton { text: "Edit"; clicked => { root.edit-entry(a.seq); } }
                             LinkButton { text: a.disputed ? "Resolve" : "Dispute"; fg: Theme.amber; clicked => { root.dispute-entry(a.seq); } }
                             LinkButton { text: "Delete"; fg: Theme.red; clicked => { root.delete-entry(a.seq); } }
                         }
@@ -594,6 +598,11 @@ export component AppWindow inherits Window {
                     }
                 }
                 if root.tab == 3: Page {
+                    Card {
+                        SectionTitle { text: "Settling up"; }
+                        Text { text: root.schedule-text; color: Theme.ink; wrap: word-wrap; }
+                        Hint { text: "Change it, or add a special event (a trip, a party), from the ShareKeep page on a phone or browser: Periods."; }
+                    }
                     for p in root.periods: Card {
                         stripe: p.closed ? Theme.line : p.can-close ? Theme.amber-line : Theme.accent;
                         HorizontalLayout {
@@ -739,7 +748,7 @@ export component AppWindow inherits Window {
 
     // ----- the expense sheet -----
     if root.exp-open: Sheet {
-        title: "New expense";
+        title: root.exp-title;
         dismissed => { root.exp-open = false; }
         Field { label: "Amount"; placeholder: "0.00"; number: true; text <=> root.exp-amount; edited => { root.expense-changed(); } }
         Field { label: "Category"; placeholder: "Groceries"; text <=> root.exp-category; edited => { root.expense-changed(); } }

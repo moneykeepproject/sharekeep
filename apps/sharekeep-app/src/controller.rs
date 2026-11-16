@@ -31,6 +31,8 @@ pub struct State {
     /// The due items on screen, and the one the expense sheet records.
     pub due: Vec<view::ExpectedRow>,
     pub exp_due: Option<view::ExpectedRow>,
+    /// The entry the expense sheet edits, and its body as it was.
+    pub exp_edit: Option<(u64, sk_ledger::bodies::Expense)>,
     pub pending: usize,
     pub refused: Vec<String>,
     pub problem: Option<String>,
@@ -92,6 +94,7 @@ impl State {
             draft: None,
             due: Vec::new(),
             exp_due: None,
+            exp_edit: None,
             pending: 0,
             refused: Vec::new(),
             problem: None,
@@ -463,6 +466,7 @@ impl State {
             let (members, settle) = view::members(l, a, cur);
             ui.set_members(model(members.into_iter().map(member_s).collect()));
             ui.set_settle(model(settle.into_iter().map(s).collect()));
+            ui.set_schedule_text(s(view::schedule_text(l, a, self.today)));
             ui.set_periods(model(
                 view::periods(l, a, self.today, 5)
                     .into_iter()
@@ -518,10 +522,37 @@ impl State {
     pub fn open_expense(&mut self, ui: &AppWindow) {
         self.exp_payer = Some(self.me());
         self.exp_due = None;
+        self.exp_edit = None;
+        ui.set_exp_title(s("New expense"));
         ui.set_exp_amount(s(""));
         ui.set_exp_category(s(""));
         ui.set_exp_note(s(""));
         ui.set_exp_date(s(self.today.to_string()));
+        ui.set_exp_open(true);
+        self.refresh_expense(ui);
+    }
+
+    /// Edit an expense: the sheet filled in from it; saving sends an edit (needs the hub).
+    pub fn edit_entry(&mut self, ui: &AppWindow, seq: i32) {
+        let Some(a) = self.agreement else { return };
+        let Some(e) = view::activity(&self.ledger, a, self.me(), self.cur)
+            .into_iter()
+            .find(|r| r.seq == seq as u64)
+            .and_then(|r| r.expense)
+        else {
+            return;
+        };
+        self.exp_payer = match e.payer {
+            sk_ledger::bodies::Payer::Member(m) => Some(m),
+            _ => Some(self.me()),
+        };
+        ui.set_exp_amount(s(self.cur.format_number(e.amount)));
+        ui.set_exp_category(s(&e.category));
+        ui.set_exp_note(s(e.note.clone().unwrap_or_default()));
+        ui.set_exp_date(s(e.date.to_string()));
+        ui.set_exp_title(s("Edit expense"));
+        self.exp_due = None;
+        self.exp_edit = Some((seq as u64, e));
         ui.set_exp_open(true);
         self.refresh_expense(ui);
     }
@@ -536,6 +567,8 @@ impl State {
         ui.set_exp_category(s(&d.category));
         ui.set_exp_note(s(&d.name));
         ui.set_exp_date(s(d.date_iso.to_string()));
+        ui.set_exp_title(s(format!("Record {}", d.name)));
+        self.exp_edit = None;
         self.exp_due = Some(d);
         ui.set_exp_open(true);
         self.refresh_expense(ui);
@@ -566,6 +599,20 @@ impl State {
             recurring: d.recurring,
             date: d.date_iso,
         });
+        if let Some((_, old)) = &self.exp_edit {
+            // an edit keeps what the sheet doesn't show
+            e.payer = match (&old.payer, self.exp_payer) {
+                (sk_ledger::bodies::Payer::Pot(p), _) => sk_ledger::bodies::Payer::Pot(*p),
+                (_, Some(m)) => sk_ledger::bodies::Payer::Member(m),
+                (p, None) => *p,
+            };
+            e.rule = old.rule;
+            e.event = old.event;
+            e.items = old.items.clone();
+            e.days = old.days.clone();
+            e.usage = old.usage.clone();
+            e.due = old.due;
+        }
         Ok(e)
     }
 
@@ -574,8 +621,13 @@ impl State {
             return;
         }
         ui.set_exp_payers(self.chips(self.exp_payer));
+        // an edit's own recurring-bill mark would read as "already recorded"
         let r = self
             .expense_body(ui)
+            .map(|mut e| {
+                e.due = e.due.filter(|_| self.exp_edit.is_none());
+                e
+            })
             .and_then(|e| view::preview(&self.ledger, self.me(), self.cur, e));
         match r {
             Ok(rows) => {
@@ -598,10 +650,17 @@ impl State {
         match self.expense_body(ui) {
             Ok(e) => {
                 ui.set_exp_open(false);
-                self.send(Job::Send {
-                    kind: "expense".into(),
-                    body: serde_json::to_value(e).unwrap_or_default(),
-                });
+                let job = match self.exp_edit.take() {
+                    Some((seq, _)) => Job::Send {
+                        kind: "entry-edit".into(),
+                        body: json!({"target": seq, "expense": e}),
+                    },
+                    None => Job::Send {
+                        kind: "expense".into(),
+                        body: serde_json::to_value(e).unwrap_or_default(),
+                    },
+                };
+                self.send(job);
             }
             Err(e) => ui.set_exp_error(s(e)),
         }

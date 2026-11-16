@@ -375,7 +375,8 @@ function agreementPage(a) {
         a.deposits.map((d) => h('div', { class: 'row' },
           h('div', { class: 'grow' }, h('div', {}, d.label), h('p', { class: 'hint' }, d.kind + ' · ' + d.detail)),
           h('strong', {}, d.balance),
-          h('button', { class: 'link', onclick: () => payInSheet(a, d) }, 'Put in'))),
+          h('button', { class: 'link', onclick: () => payInSheet(a, d) }, 'Put in'),
+          d.kind === 'Held' ? h('button', { class: 'link', onclick: () => depositMoveSheet(a, d) }, 'More') : null)),
         a.deposits.length ? null : h('p', { class: 'hint' }, 'A security deposit, a utilities deposit, or a pot the household pays bills from.'),
         h('button', { class: 'btn secondary', onclick: () => depositSheet(a) }, '+ Deposit or pot')),
       h('div', { class: 'card' }, h('h2', {}, 'Moving in and out'),
@@ -403,10 +404,16 @@ function agreementPage(a) {
     ];
   }
   if (S.tab === 'periods') {
-    return a.periods.map((p) => h('div', { class: 'card ' + (p.closed ? '' : p.can_close ? 'warn' : 'info') },
-      h('h2', {}, p.label), h('p', { class: 'hint' }, p.state),
-      p.can_close ? h('button', { class: 'btn', onclick: () => sendNow('period-close', { agreement: a.id, date: p.first }) }, 'Close this period') : null,
-      p.closed ? h('button', { class: 'btn secondary', onclick: () => statement(a, p.first) }, 'Save the statement (PDF)') : null));
+    return [
+      h('div', { class: 'card' }, h('h2', {}, 'Settling up'),
+        h('div', {}, a.schedule),
+        h('button', { class: 'btn secondary', onclick: () => scheduleSheet(a) }, 'Change how often')),
+      h('div', { class: 'card' }, h('h2', {}, 'Special events'),
+        h('p', { class: 'hint' }, 'A trip or a party: its expenses settle among the people at it, apart from the everyday bills.'),
+        a.events.map((ev) => h('div', {}, h('div', {}, ev.name), h('p', { class: 'hint' }, ev.detail))),
+        h('button', { class: 'btn secondary', onclick: () => eventSheet(a) }, '+ Special event')),
+      ...periodCards(a),
+    ];
   }
   return [
     h('div', { class: 'row' },
@@ -426,10 +433,80 @@ function agreementPage(a) {
         h('div', { class: 'grow' }, h('div', { class: 'v' }, e.title), h('p', { class: 'hint' }, e.date + ' · ' + e.detail + (e.disputed ? ' · disputed' : ''))),
         h('strong', {}, e.amount)),
       e.editable ? h('div', { class: 'row end' },
+        e.expense ? h('button', { class: 'link', onclick: () => expenseSheet(a, null, e) }, 'Edit') : null,
         h('button', { class: 'link amber', onclick: () => sendNow('dispute', { target: e.seq, resolved: e.disputed }) }, e.disputed ? 'Resolve' : 'Dispute'),
         h('button', { class: 'link red', onclick: () => { if (confirmDelete(e)) sendNow('entry-delete', { target: e.seq }); } }, 'Delete')) : null)),
     a.activity.length ? null : h('p', { class: 'hint' }, 'No expenses yet. Add the first one with + Expense.'),
   ];
+}
+
+function periodCards(a) {
+  return a.periods.map((p) => h('div', { class: 'card ' + (p.closed ? '' : p.can_close ? 'warn' : 'info') },
+    h('h2', {}, p.label), h('p', { class: 'hint' }, p.state),
+    p.can_close ? h('button', { class: 'btn', onclick: () => sendNow('period-close', { agreement: a.id, date: p.first }) }, 'Close this period') : null,
+    p.closed ? h('button', { class: 'btn secondary', onclick: () => statement(a, p.first) }, 'Save the statement (PDF)') : null));
+}
+
+function scheduleSheet(a) {
+  const WEEKDAYS = [['Mon', 'Monday'], ['Tue', 'Tuesday'], ['Wed', 'Wednesday'], ['Thu', 'Thursday'], ['Fri', 'Friday'], ['Sat', 'Saturday'], ['Sun', 'Sunday']];
+  const c = { how: 'monthly', day: '1', weekday: 'Fri', days: '14' };
+  openSheet('How often you settle up', (body, close) => {
+    const hows = h('div', {});
+    const detail = h('div', {});
+    const draw = () => {
+      hows.replaceChildren(chipRow([{ id: 'weekly', name: 'Weekly' }, { id: 'biweekly', name: 'Every 2 weeks' }, { id: 'monthly', name: 'Monthly' }, { id: 'days', name: 'Every N days' }], c.how, (k) => { c.how = k; draw(); }));
+      if (c.how === 'monthly') {
+        detail.replaceChildren(field('Day of the month (1–28, or 31 for the last day)', c.day, (v) => { c.day = v; }, { inputmode: 'numeric' }));
+      } else if (c.how === 'days') {
+        detail.replaceChildren(field('Every how many days', c.days, (v) => { c.days = v; }, { inputmode: 'numeric' }));
+      } else {
+        detail.replaceChildren(h('label', { class: 'field' }, 'On'), chipRow(WEEKDAYS.map(([id, name]) => ({ id, name })), c.weekday, (k) => { c.weekday = k; draw(); }));
+      }
+    };
+    draw();
+    body.append(h('label', { class: 'field' }, 'How often'), hows, detail,
+      h('p', { class: 'hint' }, 'The change starts when the current period ends; the current period is never cut short.'),
+      h('button', { class: 'btn', onclick: async () => {
+        const start = S.view.today;
+        let schedule;
+        if (c.how === 'monthly') {
+          const d = Number(c.day);
+          if (!(d >= 1 && d <= 31)) return toast('The day is 1 to 28, or 31 for the last day.');
+          schedule = { Monthly: { start, day: d > 28 ? 'Last' : { Day: d }, every: 1 } };
+        } else if (c.how === 'days') {
+          const n = Number(c.days);
+          if (!(n >= 1 && n <= 365)) return toast('1 to 365 days.');
+          schedule = { EveryNDays: { start, days: n } };
+        } else {
+          schedule = { Weekly: { start, weekday: c.weekday, every: c.how === 'weekly' ? 1 : 2 } };
+        }
+        if (await sendNow('schedule', { op: 'change', agreement: a.id, schedule })) close();
+      } }, 'Save'));
+  });
+}
+
+function eventSheet(a) {
+  const ev = { name: '', first: S.view.today, last: S.view.today, members: a.people.map((p) => p.id) };
+  openSheet('Special event', (body, close) => {
+    const who = h('div', {});
+    const draw = () => who.replaceChildren(h('div', { class: 'chips' }, a.people.map((p) => h('button', {
+      class: 'chip' + (ev.members.includes(p.id) ? ' on' : ''),
+      onclick: () => { ev.members = ev.members.includes(p.id) ? ev.members.filter((m) => m !== p.id) : [...ev.members, p.id]; draw(); },
+    }, p.name))));
+    draw();
+    body.append(
+      field('Name', '', (v) => { ev.name = v; }, { placeholder: 'Beach weekend' }),
+      field('First day', ev.first, (v) => { ev.first = v; }, { type: 'date' }),
+      field('Last day', ev.last, (v) => { ev.last = v; }, { type: 'date' }),
+      h('label', { class: 'field' }, 'Who is in it'), who,
+      h('button', { class: 'btn', onclick: async () => {
+        if (!ev.name.trim()) return toast('Name it, like Beach weekend.');
+        if (ev.last < ev.first) return toast('The last day is on or after the first.');
+        if (!ev.members.length) return toast('Pick who is in it.');
+        const ok = await sendNow('schedule', { op: 'event', agreement: a.id, id: a.next_event, name: ev.name.trim(), first: ev.first, last: ev.last, members: ev.members });
+        if (ok) close();
+      } }, 'Add'));
+  });
 }
 
 function confirmDelete(e) {
@@ -507,14 +584,21 @@ function chipRow(people, chosen, pick) {
   return h('div', { class: 'chips' }, people.map((p) => h('button', { class: 'chip' + (p.id === chosen ? ' on' : ''), onclick: () => pick(p.id) }, p.name)));
 }
 
-function expenseSheet(a, due) {
+function expenseSheet(a, due, editing) {
   const cur = S.view.currency;
-  const e = { amount: '', category: '', date: S.view.today, note: '', payer: S.member };
+  const e = { amount: '', category: '', date: S.view.today, note: '', payer: S.member, event: null };
+  if (editing) {
+    const x = editing.expense;
+    Object.assign(e, {
+      amount: formatPlain(x.amount, cur), category: x.category, date: x.date, note: x.note || '',
+      payer: x.payer.member || S.member, event: x.event == null ? null : x.event,
+    });
+  }
   if (due) {
     Object.assign(e, { amount: formatPlain(due.amount_cents, cur), category: due.category, date: due.date_iso, note: due.name });
     if (due.member) e.payer = due.member;
   }
-  openSheet(due ? 'Record ' + due.name : 'New expense', (body, close) => {
+  openSheet(editing ? 'Edit expense' : due ? 'Record ' + due.name : 'New expense', (body, close) => {
     const preview = h('div', {});
     const err = h('p', { class: 'error' });
     const save = h('button', { class: 'btn', disabled: true }, 'Save');
@@ -523,7 +607,8 @@ function expenseSheet(a, due) {
     const body_ = () => ({
       agreement: a.id, date: e.date, amount: parseAmount(e.amount, cur), payer: { member: e.payer },
       category: e.category.trim(), note: e.note.trim() || undefined,
-      due: due ? { recurring: due.recurring, date: due.date_iso } : undefined,
+      due: due ? { recurring: due.recurring, date: due.date_iso } : editing ? editing.expense.due : undefined,
+      event: e.event == null ? undefined : e.event,
     });
     const check = () => {
       const b = body_();
@@ -538,7 +623,8 @@ function expenseSheet(a, due) {
       clearTimeout(timer);
       timer = setTimeout(async () => {
         try {
-          const p = await api('POST', '/api/v1/preview', { expense: b });
+          // an edit's own recurring-bill mark would read as "already recorded": the split is the same without it
+          const p = await api('POST', '/api/v1/preview', { expense: editing ? Object.assign({}, b, { due: undefined }) : b });
           preview.replaceChildren(...p.rows.map((r) => kv(r.name, r.amount)));
           err.textContent = '';
           save.disabled = false;
@@ -551,13 +637,29 @@ function expenseSheet(a, due) {
     };
     const drawPayers = () => payers.replaceChildren(chipRow(a.people, e.payer, (id) => { e.payer = id; drawPayers(); check(); }));
     drawPayers();
-    save.onclick = () => { close(); queue('expense', body_()); };
+    // an expense of a special event settles with the event
+    const events = h('div', {});
+    const drawEvents = () => {
+      const open = a.events.filter((ev) => ev.first <= e.date && e.date <= ev.last);
+      if (!open.length) { e.event = null; events.replaceChildren(); return; }
+      events.replaceChildren(h('label', { class: 'field' }, 'Part of'),
+        chipRow([{ id: null, name: 'Everyday' }, ...open.map((ev) => ({ id: ev.id, name: ev.name }))], e.event, (id) => { e.event = id; drawEvents(); check(); }));
+    };
+    drawEvents();
+    save.onclick = async () => {
+      if (editing) {
+        if (await sendNow('entry-edit', { target: editing.seq, expense: body_() })) close();
+      } else {
+        close();
+        queue('expense', body_());
+      }
+    };
     body.append(
       field('Amount', e.amount, (v) => { e.amount = v; check(); }, { inputmode: 'decimal', placeholder: '0.00' }),
       field('Category', e.category, (v) => { e.category = v; check(); }, { placeholder: 'Groceries' }),
-      field('Date', e.date, (v) => { e.date = v; check(); }, { type: 'date' }),
+      field('Date', e.date, (v) => { e.date = v; drawEvents(); check(); }, { type: 'date' }),
       field('Note (optional)', e.note, (v) => { e.note = v; }),
-      h('label', { class: 'field' }, 'Paid by'), payers,
+      h('label', { class: 'field' }, 'Paid by'), payers, events,
       h('div', { class: 'card' }, h('h2', {}, 'How it divides'), preview, err),
       save);
     check();
@@ -628,6 +730,34 @@ function payInSheet(a, dep) {
         if (!cents) return toast('Type the amount, like 200.00.');
         const ok = await sendNow('deposit', { op: 'pay-in', agreement: a.id, id: dep.id, member: S.member, amount: cents });
         if (ok) close();
+      } }, 'Save'));
+  });
+}
+
+// A held deposit's money moving: paid back (refund) or bought out by someone moving in.
+function depositMoveSheet(a, dep) {
+  const cur = S.view.currency;
+  const m = { what: 'refund', amount: '', from: a.people[0].id, to: (a.people[1] || a.people[0]).id };
+  openSheet(dep.label, (body, close) => {
+    const kinds = h('div', {});
+    const extra = h('div', {});
+    const draw = () => {
+      kinds.replaceChildren(chipRow([{ id: 'refund', name: 'Paid back' }, { id: 'buy-out', name: 'Bought out' }], m.what, (k) => { m.what = k; draw(); }));
+      extra.replaceChildren(...(m.what === 'buy-out' ? [
+        h('label', { class: 'field' }, 'Whose part'), chipRow(a.people, m.from, (id) => { m.from = id; draw(); }),
+        h('label', { class: 'field' }, 'Bought by'), chipRow(a.people, m.to, (id) => { m.to = id; draw(); }),
+      ] : [h('p', { class: 'hint' }, 'What the landlord or utility paid back: shared out by each person\'s part.')]));
+    };
+    draw();
+    body.append(kinds, field('Amount', '', (v) => { m.amount = v; }, { inputmode: 'decimal', placeholder: '0.00' }), extra,
+      h('button', { class: 'btn', onclick: async () => {
+        const amount = parseAmount(m.amount, cur);
+        if (!amount) return toast('Type the amount.');
+        const b = m.what === 'refund'
+          ? { op: 'refund', agreement: a.id, id: dep.id, amount }
+          : { op: 'buy-out', agreement: a.id, id: dep.id, from: m.from, to: m.to, amount };
+        if (m.what === 'buy-out' && m.from === m.to) return toast('Pick two different people.');
+        if (await sendNow('deposit', b)) close();
       } }, 'Save'));
   });
 }

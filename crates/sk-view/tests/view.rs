@@ -210,3 +210,58 @@ fn a_recurring_bill_is_due_only_on_its_day() {
         assert!(e.date.ends_with(" 5"), "{}", e.date);
     }
 }
+
+#[test]
+fn the_schedule_in_words_and_expenses_for_editing() {
+    let l = sk_view::demo::ledger(today());
+    let a = &view::snapshot(&l, JERRY, usd(), today()).agreements[0];
+    assert_eq!(a.schedule, "Every month, on the 1st");
+    assert!(a.events.is_empty());
+    assert_eq!(a.next_event, 1);
+    let groceries = a
+        .activity
+        .iter()
+        .find(|r| r.title == "Trader Joe's")
+        .unwrap();
+    assert_eq!(groceries.expense.as_ref().unwrap().amount, 8347);
+    assert!(a
+        .activity
+        .iter()
+        .find(|r| r.title == "Payment")
+        .unwrap()
+        .expense
+        .is_none());
+}
+
+#[test]
+fn a_waiting_schedule_change_is_shown() {
+    use serde_json::json;
+    let mut records = sk_view::demo::records(today());
+    let ts = today()
+        .and_hms_opt(12, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis();
+    let author = sk_chain::Author {
+        member: Some(JERRY),
+        device: "t".into(),
+    };
+    let r = sk_chain::next(
+        records.last(),
+        ts,
+        author,
+        "schedule",
+        json!({
+            "op": "change", "agreement": 1,
+            "schedule": {"Weekly": {"start": today(), "weekday": "Fri", "every": 2}},
+        }),
+    )
+    .unwrap();
+    records.push(r);
+    let (l, skipped) = sk_ledger::Ledger::replay(&records);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert_eq!(
+        view::schedule_text(&l, A, today()),
+        "Every month, on the 1st. From Apr 1: every 2 weeks, on Friday"
+    );
+}
