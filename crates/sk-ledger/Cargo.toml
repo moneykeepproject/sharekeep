@@ -1,0 +1,16 @@
+[package]
+name = "sk-ledger"
+description = "ShareKeep agreement engine: a book's history replayed into members, agreements, rules, entries, deposits, approvals and closed periods; every new record checked against it"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sk-core.workspace = true
+sk-split.workspace = true
+sk-chain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true

@@ -882,20 +882,7 @@ impl Store {
         if !ok_id {
             return Err(StoreError::Invalid("that request id isn't valid".into()));
         }
-        let seen: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT seq FROM client_ids WHERE client_id = ?1",
-                [client_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(seq) = seen {
-            let rec = self
-                .records(seq as u64, 1)?
-                .into_iter()
-                .next()
-                .ok_or_else(|| StoreError::Corrupt("a request's record is missing".into()))?;
+        if let Some(rec) = self.made_by(client_id)? {
             return Ok((rec, false));
         }
         if kind == sk_chain::GENESIS {
@@ -919,6 +906,38 @@ impl Store {
             return Err(e);
         }
         Ok((rec, true))
+    }
+
+    /// The record a request id already made, if any.
+    pub fn made_by(&self, client_id: &str) -> StoreResult<Option<Record>> {
+        let seen: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT seq FROM client_ids WHERE client_id = ?1",
+                [client_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match seen {
+            Some(seq) => Ok(Some(
+                self.records(seq as u64, 1)?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| StoreError::Corrupt("a request's record is missing".into()))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// The record that would be appended next (for checking it first).
+    pub fn candidate(
+        &self,
+        ts: i64,
+        author: Author,
+        kind: &str,
+        body: Value,
+    ) -> StoreResult<Record> {
+        Ok(sk_chain::next(self.head.as_ref(), ts, author, kind, body)?)
     }
 
     /// Whether the history has a record of `kind` whose body's `field` equals `value`

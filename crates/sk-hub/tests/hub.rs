@@ -136,14 +136,52 @@ fn household(h: &Hub, hyperbook: bool, password: Option<&str>) -> (String, Strin
     let id = b["book"]["id"].as_str().unwrap().to_string();
     let file = b["file"].as_str().unwrap().to_string();
     for (n, name) in [(1, "Jerry"), (2, "Sam")] {
-        let (s, _) = h.admin(
-            "POST",
-            &format!("/admin/v1/books/{id}/records"),
-            Some(json!({"client_id": format!("m{n}"), "kind": "member-add", "body": {"id": n, "name": name}})),
-        );
-        assert_eq!(s, 201);
+        admin_record(h, &id, None, "member-add", json!({"id": n, "name": name}));
     }
+    admin_record(
+        h,
+        &id,
+        None,
+        "agreement-add",
+        json!({
+            "id": 1, "name": "Home",
+            "members": {"1": "2026-11-01", "2": "2026-11-01"},
+            "schedule": {"Monthly": {"start": "2026-11-01", "day": {"Day": 1}, "every": 1}},
+        }),
+    );
+    // a one-keeper household, so the keeper's rule is in force at once
+    let (s, _) = h.admin(
+        "POST",
+        &format!("/admin/v1/books/{id}/settings"),
+        Some(json!({"key": "one_keeper", "value": 1})),
+    );
+    assert_eq!(s, 201);
+    admin_record(
+        h,
+        &id,
+        Some(1),
+        "rule-proposal",
+        json!({
+            "agreement": 1, "rule_id": 1, "effective": "2026-11-01",
+            "rule": {"name": "Shared", "method": "Equal", "members": [1, 2]},
+        }),
+    );
     (id, file)
+}
+
+fn admin_record(h: &Hub, book: &str, member: Option<u32>, kind: &str, body: Value) -> Value {
+    let n = h.clock.fetch_add(1, Ordering::SeqCst);
+    let (s, b) = h.admin(
+        "POST",
+        &format!("/admin/v1/books/{book}/records"),
+        Some(json!({"client_id": format!("t{n}"), "kind": kind, "body": body, "member": member})),
+    );
+    assert_eq!(s, 201, "{kind}: {b}");
+    b
+}
+
+fn expense(amount: i64, payer: u32) -> Value {
+    json!({"agreement": 1, "date": "2026-11-14", "amount": amount, "payer": {"member": payer}, "category": "Groceries"})
 }
 
 fn pairing_code(h: &Hub, book: &str, member: u32) -> String {
@@ -188,15 +226,13 @@ fn a_device_pairs_queues_offline_work_and_syncs_a_verified_history() {
     // made offline, sent later, in order
     let dir = tempfile::tempdir().unwrap();
     let mut outbox = Outbox::open(&dir.path().join("outbox.json")).unwrap();
+    outbox.push("expense", expense(8347, 2), 1).unwrap();
     outbox
         .push(
-            "expense",
-            json!({"amount": 8347, "category": "Groceries"}),
-            1,
+            "payment",
+            json!({"agreement": 1, "date": "2026-11-14", "from": 2, "to": 1, "amount": 2000}),
+            2,
         )
-        .unwrap();
-    outbox
-        .push("payment", json!({"to": 1, "amount": 2000}), 2)
         .unwrap();
     let report = outbox.flush(&sam);
     assert_eq!(report.sent.len(), 2);
@@ -208,12 +244,8 @@ fn a_device_pairs_queues_offline_work_and_syncs_a_verified_history() {
     assert_eq!(report.sent[0].kind, "expense");
 
     // a resend (a crash after sending, before saving) adds nothing
-    let again = sam
-        .submit("same-id", "expense", &json!({"amount": 1}))
-        .unwrap();
-    let dup = sam
-        .submit("same-id", "expense", &json!({"amount": 1}))
-        .unwrap();
+    let again = sam.submit("same-id", "expense", &expense(100, 2)).unwrap();
+    let dup = sam.submit("same-id", "expense", &expense(100, 2)).unwrap();
     assert_eq!(again, dup);
 
     // devices can't add what only the hub computer adds
@@ -229,7 +261,14 @@ fn a_device_pairs_queues_offline_work_and_syncs_a_verified_history() {
 
     // the device's copy matches the hub's history, record for record
     let mut replica = Replica::open(&dir.path().join("home")).unwrap();
-    assert_eq!(replica.sync(&sam, 100).unwrap(), 6);
+    // the agreement engine refuses what would make the book wrong
+    let mut wrong = expense(100, 2);
+    wrong["agreement"] = json!(9);
+    let e = sam.submit_now("expense", &wrong).unwrap_err();
+    assert_eq!(status(&e), 422);
+    assert!(e.to_string().contains("no such agreement"), "{e}");
+
+    assert_eq!(replica.sync(&sam, 100).unwrap(), 9);
     let (_, hub_records) = h.admin("GET", &format!("/admin/v1/books/{book}/records"), None);
     assert_eq!(
         replica.head().unwrap().hash.to_hex(),
@@ -243,7 +282,7 @@ fn a_device_pairs_queues_offline_work_and_syncs_a_verified_history() {
             .unwrap()
             .records()
             .len(),
-        6
+        9
     );
 
     // removed devices are refused at once
@@ -332,9 +371,7 @@ fn pairings_survive_a_restart_and_a_locked_book_waits_for_its_password() {
     let (book, file) = household(&h, true, Some("correct horse battery"));
     let code = pairing_code(&h, &book, 1);
     let (jerry, _) = Client::pair(h.address(), &code, PIN, "Jerry's laptop").unwrap();
-    jerry
-        .submit_now("expense", &json!({"amount": 500}))
-        .unwrap();
+    jerry.submit_now("expense", &expense(500, 1)).unwrap();
 
     // a restart (an update installed over the old version, a reboot)
     h.restart();
@@ -356,7 +393,7 @@ fn pairings_survive_a_restart_and_a_locked_book_waits_for_its_password() {
     assert_eq!(s, 200, "{b}");
     assert_eq!(jerry.me().unwrap().member, 1);
     let (_, recs) = h.admin("GET", &format!("/admin/v1/books/{book}/records"), None);
-    assert_eq!(recs["records"].as_array().unwrap().len(), 4);
+    assert_eq!(recs["records"].as_array().unwrap().len(), 7);
 }
 
 #[test]
@@ -392,8 +429,7 @@ fn a_device_notices_a_rewritten_history() {
     let code = pairing_code(&h, &book, 2);
     let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
     for i in 0..3 {
-        sam.submit_now("expense", &json!({"amount": 100 + i}))
-            .unwrap();
+        sam.submit_now("expense", &expense(100 + i, 2)).unwrap();
     }
     let dir = tempfile::tempdir().unwrap();
     let mut replica = Replica::open(dir.path()).unwrap();
@@ -406,7 +442,7 @@ fn a_device_notices_a_rewritten_history() {
     let path = h.data.join("books").join(&file);
     {
         let c = rusqlite::Connection::open(&path).unwrap();
-        c.execute_batch("DROP TRIGGER records_no_delete; DELETE FROM records WHERE seq >= 4;")
+        c.execute_batch("DROP TRIGGER records_no_delete; DELETE FROM records WHERE seq >= 7;")
             .unwrap();
     }
     {
@@ -429,4 +465,50 @@ fn a_device_notices_a_rewritten_history() {
     }
     // the device's copy is kept as it was
     assert_eq!(replica.head(), Some(seen));
+}
+
+#[test]
+fn closing_a_period_saves_the_statement_and_seals_it_into_the_hyperbook() {
+    let h = hub();
+    let (book, _) = household(&h, true, None);
+    let code = pairing_code(&h, &book, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    sam.submit_now("expense", &expense(9000, 2)).unwrap();
+    let close = json!({"agreement": 1, "date": "2026-11-01"});
+    // November isn't over yet
+    assert_eq!(
+        status(&sam.submit_now("period-close", &close).unwrap_err()),
+        422
+    );
+    h.advance_minutes(20 * 24 * 60);
+    sam.submit_now("period-close", &close).unwrap();
+
+    let (_, recs) = h.admin("GET", &format!("/admin/v1/books/{book}/records"), None);
+    let records = recs["records"].as_array().unwrap();
+    let seal = records.last().unwrap();
+    assert_eq!(seal["kind"], "seal");
+    let sealed = seal["body"]["statement_sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // a device downloads the statement; it is the one sealed
+    let (s, pdf) = sk_client::tls::https_call(
+        h.r().https,
+        "127.0.0.1",
+        &h.r().ca_der,
+        "GET",
+        "/api/v1/statements/1/2026-11-01",
+        &[("Authorization", &format!("Bearer {}", sam.token().unwrap()))],
+        None,
+    )
+    .unwrap();
+    assert_eq!(s, 200);
+    assert!(pdf.starts_with(b"%PDF"));
+    assert_eq!(sk_chain::Hash::of(&pdf).to_hex(), sealed);
+    // the closed period takes nothing more
+    assert_eq!(
+        status(&sam.submit_now("expense", &expense(100, 2)).unwrap_err()),
+        422
+    );
 }

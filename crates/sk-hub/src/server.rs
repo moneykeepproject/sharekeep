@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use sk_chain::Author;
 use sk_client::api::{BookFacts, MeAnswer, PairAnswer, PairRequest, SubmitRequest};
 use sk_core::Currency;
+use sk_ledger::Ledger;
 use sk_store::crypt::KdfParams;
 use sk_store::{BookInfo, BookKind, Encryption, NewBook, Secret, Store, StoreError};
 use tiny_http::{Header, Request, Response, Server};
@@ -35,8 +36,9 @@ use crate::registry::{Device, Registry};
 use crate::util::{self, StoreResult};
 use crate::{pin, wifi};
 
-/// Kinds a paired device may add. Business rules on their bodies come with the agreement
-/// engine; here the hub checks who sent them and keeps them in order.
+/// Kinds a paired device may add. Every record is also checked by the agreement engine
+/// ([`sk_ledger`]) before it's written: a record that would make the book wrong is refused
+/// (422) with a message for the person who sent it.
 pub const DEVICE_KINDS: &[&str] = &[
     "expense",
     "payment",
@@ -49,14 +51,16 @@ pub const DEVICE_KINDS: &[&str] = &[
     "member-join",
     "member-leave",
     "period-close",
+    "schedule",
 ];
 
 /// Kinds the hub computer may add besides those.
-pub const ADMIN_KINDS: &[&str] = &["member-add", "agreement-add", "schedule"];
+pub const ADMIN_KINDS: &[&str] = &["member-add", "agreement-add"];
 
 pub const ADMIN_TOKEN_FILE: &str = "admin.token";
 pub const BOOKS_DIR: &str = "books";
 pub const BACKUPS_DIR: &str = "backups";
+pub const STATEMENTS_DIR: &str = "statements";
 
 const MAX_BODY: u64 = 1 << 20;
 const MAX_PAGE: u64 = 1000;
@@ -139,11 +143,45 @@ struct Book {
     file: String,
     path: PathBuf,
     store: Option<Store>,
+    /// The book's state, replayed from its history when it opens.
+    ledger: Ledger,
     /// Why the book isn't open (locked, damaged…).
     problem: Option<String>,
 }
 
+/// Replay a book's history into its state.
+fn replay(store: &Store, log: &Log) -> Ledger {
+    match store.records(0, u64::MAX) {
+        Ok(records) => {
+            let (l, skipped) = Ledger::replay(&records);
+            if !skipped.is_empty() {
+                log(&format!(
+                    "{}: {} old record(s) don't apply and are skipped",
+                    store.info().name,
+                    skipped.len()
+                ));
+            }
+            l
+        }
+        Err(e) => {
+            log(&e.to_string());
+            Ledger::new()
+        }
+    }
+}
+
 impl Book {
+    fn open(file: String, path: PathBuf, store: Store, log: &Log) -> Book {
+        let ledger = replay(&store, log);
+        Book {
+            file,
+            path,
+            store: Some(store),
+            ledger,
+            problem: None,
+        }
+    }
+
     fn info(&self) -> Option<&BookInfo> {
         self.store.as_ref().map(Store::info)
     }
@@ -214,7 +252,7 @@ fn facts(info: &BookInfo) -> BookFacts {
     }
 }
 
-fn load_books(dir: &Path) -> Vec<Book> {
+fn load_books(dir: &Path, log: &Log) -> Vec<Book> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
@@ -230,22 +268,23 @@ fn load_books(dir: &Path) -> Vec<Book> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let (store, problem) = match sk_store::book_kind(&path) {
-            Ok(BookKind::Encrypted) => (
-                None,
-                Some("locked: enter its password on the hub computer".to_string()),
-            ),
+        let problem = match sk_store::book_kind(&path) {
+            Ok(BookKind::Encrypted) => "locked: enter its password on the hub computer".to_string(),
             Ok(BookKind::Plain) => match Store::open(&path, None) {
-                Ok(s) => (Some(s), None),
-                Err(e) => (None, Some(e.to_string())),
+                Ok(s) => {
+                    out.push(Book::open(file, path, s, log));
+                    continue;
+                }
+                Err(e) => e.to_string(),
             },
-            Err(e) => (None, Some(e.to_string())),
+            Err(e) => e.to_string(),
         };
         out.push(Book {
             file,
             path,
-            store,
-            problem,
+            store: None,
+            ledger: Ledger::new(),
+            problem: Some(problem),
         });
     }
     out
@@ -344,7 +383,7 @@ pub fn start(opts: HubOptions) -> StoreResult<Running> {
     let resolver = Arc::new(wifi::Resolver::new(&material)?);
     let tls = wifi::server_config(resolver.clone())?;
     let registry = Registry::open(&opts.data)?;
-    let books = load_books(&opts.data.join(BOOKS_DIR));
+    let books = load_books(&opts.data.join(BOOKS_DIR), &opts.log);
     let admin_token = admin_token(&opts.data)?;
     let stopping = Arc::new(AtomicBool::new(false));
     let peers: wifi::Peers = Arc::new(Mutex::new(HashMap::new()));
@@ -515,15 +554,77 @@ fn store_status(e: &StoreError) -> u16 {
 
 /// The open book with `id`, or why it can't be used.
 fn book_by_id<'a>(state: &'a mut State, id: &str) -> Result<&'a mut Store, (u16, &'static str)> {
-    let book = state
+    open_book(state, id)?
+        .store
+        .as_mut()
+        .ok_or((423, "This book is locked."))
+}
+
+fn open_book<'a>(state: &'a mut State, id: &str) -> Result<&'a mut Book, (u16, &'static str)> {
+    state
         .books
         .iter_mut()
         .find(|b| b.info().is_some_and(|i| i.book_id == id))
         .ok_or((
             423,
             "This book is locked or unavailable on the hub. Unlock it on the hub computer.",
-        ))?;
-    book.store.as_mut().ok_or((423, "This book is locked."))
+        ))
+}
+
+/// Add a record once per request key, after the agreement engine has checked it. A period
+/// close also saves the statement PDF and, in a Hyperbook, seals it into the history.
+fn add_record(
+    shared: &Shared,
+    st: &mut State,
+    book_id: &str,
+    key: &str,
+    author: Author,
+    kind: &str,
+    body: Value,
+) -> Result<(sk_chain::Record, bool), (u16, String)> {
+    let now = shared.now();
+    let book = open_book(st, book_id).map_err(|(s, m)| (s, m.to_string()))?;
+    let store = book
+        .store
+        .as_mut()
+        .ok_or((423, "This book is locked.".to_string()))?;
+    let err = |e: StoreError| (store_status(&e), e.to_string());
+    if let Some(rec) = store.made_by(key).map_err(err)? {
+        return Ok((rec, false));
+    }
+    let candidate = store
+        .candidate(now, author.clone(), kind, body.clone())
+        .map_err(err)?;
+    book.ledger.check(&candidate).map_err(|e| (422, e.0))?;
+    let (rec, fresh) = store
+        .append_once(key, now, author, kind, body)
+        .map_err(err)?;
+    let effects = book.ledger.apply(&rec).map_err(|e| (500, e.0))?;
+    if let Some(statement) = effects.statement {
+        let info = store.info().clone();
+        let pdf = sk_report::statement_pdf(&statement, &info.name, info.currency)
+            .map_err(|e| (500, e))?;
+        let dir = shared.data.join(STATEMENTS_DIR).join(&info.book_id);
+        std::fs::create_dir_all(&dir).map_err(|e| (500, e.to_string()))?;
+        let name = format!(
+            "{}-{}-{}.pdf",
+            statement.agreement.0, statement.period.first, statement.period.last
+        );
+        util::write_private(&dir.join(name), &pdf).map_err(|e| (500, e))?;
+        if info.hyperbook {
+            let seal = store
+                .seal(
+                    now,
+                    statement.agreement.0,
+                    &statement.period.first.to_string(),
+                    &statement.period.last.to_string(),
+                    Some(sk_chain::Hash::of(&pdf)),
+                )
+                .map_err(err)?;
+            let _ = book.ledger.apply(&seal);
+        }
+    }
+    Ok((rec, fresh))
 }
 
 // ----- devices --------------------------------------------------------------------------------
@@ -660,24 +761,58 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
                 member: Some(sk_core::MemberId(d.member)),
                 device: d.name.clone(),
             };
-            let now = shared.now();
             let mut st = shared.lock();
-            let result = match book_by_id(&mut st, &d.book_id) {
-                Ok(s) => s
-                    .append_once(
-                        &format!("d{}:{}", d.id, sub.client_id),
-                        now,
-                        author,
-                        &sub.kind,
-                        sub.body,
-                    )
-                    .map_err(|e| (store_status(&e), e.to_string())),
-                Err((s, m)) => Err((s, m.to_string())),
-            };
+            let result = add_record(
+                shared,
+                &mut st,
+                &d.book_id,
+                &format!("d{}:{}", d.id, sub.client_id),
+                author,
+                &sub.kind,
+                sub.body,
+            );
             drop(st);
             match result {
                 Ok((rec, fresh)) => send(shared, req, if fresh { 201 } else { 200 }, &json!(rec)),
                 Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
+        ("GET", p) if p.starts_with("/api/v1/statements/") => {
+            // /api/v1/statements/<agreement>/<first day>
+            let rest: Vec<&str> = p
+                .trim_start_matches("/api/v1/statements/")
+                .split('/')
+                .collect();
+            let (Some(a), Some(first)) = (rest.first(), rest.get(1)) else {
+                return fail(shared, req, 404, "No such statement.");
+            };
+            let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit() || b == b'-');
+            if !ok(a) || !ok(first) {
+                return fail(shared, req, 404, "No such statement.");
+            }
+            let dir = shared.data.join(STATEMENTS_DIR).join(&d.book_id);
+            let prefix = format!("{a}-{first}-");
+            let found = std::fs::read_dir(&dir).ok().and_then(|it| {
+                it.flatten().map(|e| e.path()).find(|p| {
+                    p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with(&prefix))
+                })
+            });
+            match found.and_then(|p| std::fs::read(p).ok()) {
+                Some(pdf) => {
+                    let mut resp = Response::from_data(pdf).with_status_code(200);
+                    for (k, v) in [
+                        ("Content-Type", "application/pdf"),
+                        ("Cache-Control", "no-store"),
+                    ] {
+                        if let Some(h) = header(k, v) {
+                            resp.add_header(h);
+                        }
+                    }
+                    let _ = req.respond(resp);
+                    (shared.log)(&format!("GET {p} 200"));
+                }
+                None => fail(shared, req, 404, "No such statement."),
             }
         }
         _ => fail(shared, req, 404, "No such request."),
@@ -1005,12 +1140,8 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
                         "book": facts(c.store.info()),
                         "recovery_key": c.recovery_key,
                     });
-                    shared.lock().books.push(Book {
-                        file,
-                        path: c.path,
-                        store: Some(c.store),
-                        problem: None,
-                    });
+                    let book = Book::open(file, c.path, c.store, &shared.log);
+                    shared.lock().books.push(book);
                     send(shared, req, 201, &answer)
                 }
                 Err(e) => fail(shared, req, store_status(&e), &e.to_string()),
@@ -1035,6 +1166,7 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
             }
             match Store::open(&book.path, Some(&secret)) {
                 Ok(s) => {
+                    book.ledger = replay(&s, &shared.log);
                     book.store = Some(s);
                     book.problem = None;
                     let s = book.summary();
@@ -1063,18 +1195,15 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
                 device: "hub".into(),
             };
             let mut st = shared.lock();
-            let r = match book_by_id(&mut st, id) {
-                Ok(s) => s
-                    .append_once(
-                        &format!("admin:{}", b.client_id),
-                        now,
-                        author,
-                        &b.kind,
-                        b.body,
-                    )
-                    .map_err(|e| (store_status(&e), e.to_string())),
-                Err((s, m)) => Err((s, m.to_string())),
-            };
+            let r = add_record(
+                shared,
+                &mut st,
+                id,
+                &format!("admin:{}", b.client_id),
+                author,
+                &b.kind,
+                b.body,
+            );
             drop(st);
             match r {
                 Ok((rec, fresh)) => send(shared, req, if fresh { 201 } else { 200 }, &json!(rec)),
@@ -1101,10 +1230,16 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
         ("POST", ["books", id, "settings"]) => {
             let b = body!(SettingRequest);
             let mut st = shared.lock();
-            let r = match book_by_id(&mut st, id) {
-                Ok(s) => s
-                    .set_setting(now, Author::hub(), &b.key, b.value)
-                    .map_err(|e| (store_status(&e), e.to_string())),
+            let r = match open_book(&mut st, id) {
+                Ok(book) => match book.store.as_mut() {
+                    Some(s) => s
+                        .set_setting(now, Author::hub(), &b.key, b.value)
+                        .map_err(|e| (store_status(&e), e.to_string()))
+                        .inspect(|rec| {
+                            let _ = book.ledger.apply(rec);
+                        }),
+                    None => Err((423, "This book is locked.".to_string())),
+                },
                 Err((s, m)) => Err((s, m.to_string())),
             };
             drop(st);

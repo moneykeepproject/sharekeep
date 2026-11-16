@@ -30,7 +30,8 @@ pairing code copied from MoneyKeep).
   has migrations; a newer one is refused with a message to update).
 - **Records**: a device reads its book's history in pages (≤ 1,000) and adds records of the
   device kinds (expense, payment, approval, dispute, entry-edit, entry-delete,
-  rule-proposal, deposit, member-join, member-leave, period-close). The hub stamps each
+  rule-proposal, deposit, member-join, member-leave, period-close, schedule). Since 4a every
+  record is checked by the agreement engine first (`docs/specs/agreement-engine.md`). The hub stamps each
   record with the device's member and name; a request id makes a resend return the first
   record instead of adding another. Bodies must be JSON objects. The hub computer may also
   add member-add, agreement-add and schedule records and change book settings.
@@ -56,5 +57,5 @@ pairing code copied from MoneyKeep).
 
 Installing and running the hub as a Windows service and a macOS launchd daemon (with the
 data-folder permissions and the PowerShell lessons from MoneyKeep), keys sealed by the
-operating system, the agreement engine's checks on record bodies, period close with seals,
-and the web app the hub serves.
+operating system (4d), and the web app the hub serves (4c). The agreement engine's checks
+and period close with seals arrived in 4a.

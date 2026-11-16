@@ -79,6 +79,11 @@ impl RuleBook {
         self.defaults.insert(category.into(), id);
     }
 
+    /// The fallback rule, if one is set.
+    pub fn fallback(&self) -> Option<RuleId> {
+        self.fallback
+    }
+
     pub fn set_fallback(&mut self, id: RuleId) {
         self.fallback = Some(id);
     }

@@ -1,0 +1,13 @@
+[package]
+name = "sk-report"
+description = "ShareKeep statement PDFs (US Letter, built-in Helvetica, no font files)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sk-core.workspace = true
+sk-ledger.workspace = true
+printpdf.workspace = true
