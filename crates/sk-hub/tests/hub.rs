@@ -1183,3 +1183,53 @@ fn the_hub_computer_cant_act_in_peoples_names() {
         400
     );
 }
+
+#[test]
+fn a_statement_that_couldnt_be_saved_is_made_later_from_the_history() {
+    let h = hub();
+    let (book, _) = household(&h, true, None);
+    let code = pairing_code(&h, &book, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    sam.submit_now("expense", &expense(9000, 2)).unwrap();
+    // the statements folder can't be made (a file stands in its way)
+    let dir = h.data.join("statements");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(&book), b"in the way").unwrap();
+    h.advance_minutes(20 * 24 * 60);
+    // the close is accepted all the same: it is in the history
+    sam.submit_now(
+        "period-close",
+        &json!({"agreement": 1, "date": "2026-11-01"}),
+    )
+    .unwrap();
+    let records = |h: &Hub| {
+        let (_, recs) = h.admin("GET", &format!("/admin/v1/books/{book}/records"), None);
+        recs["records"].as_array().unwrap().clone()
+    };
+    assert_eq!(records(&h).last().unwrap()["kind"], "period-close");
+    // once the folder can be written, the statement and its seal are made from the history
+    std::fs::remove_file(dir.join(&book)).unwrap();
+    let (s, pdf) = https(
+        &h,
+        "GET",
+        "/api/v1/statements/1/2026-11-01",
+        sam.token(),
+        None,
+    );
+    assert_eq!(s, 200);
+    assert!(pdf.starts_with(b"%PDF"));
+    let seal = records(&h).last().unwrap().clone();
+    assert_eq!(seal["kind"], "seal");
+    assert_eq!(
+        seal["body"]["statement_sha256"].as_str().unwrap(),
+        sk_chain::Hash::of(&pdf).to_hex()
+    );
+    // and only once
+    sam.submit_now(
+        "payment",
+        &json!({"agreement": 1, "date": "2026-12-02", "from": 1, "to": 2, "amount": 100}),
+    )
+    .ok();
+    let seals = records(&h).iter().filter(|r| r["kind"] == "seal").count();
+    assert_eq!(seals, 1);
+}

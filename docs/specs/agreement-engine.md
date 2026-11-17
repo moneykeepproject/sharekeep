@@ -77,6 +77,11 @@ US Letter, built-in Helvetica (GroupKeep's page writer), header band, "Who owes 
 by category, entries (disputed rows highlighted), page numbers. The hub saves it as
 `statements/<book id>/<agreement>-<first>-<last>.pdf`; in a Hyperbook it then appends a `seal`
 record with the PDF's SHA-256. Devices download it from `/api/v1/statements/<agreement>/<first>`.
+If the PDF can't be saved when the period closes (disk full, permissions), the close still
+stands; when the book opens, before its next change and when a statement is downloaded, the
+hub replays the history up to each `period-close`, saves any statement that is missing and
+seals any closed period of a Hyperbook that has no seal. A statement already saved is never
+replaced.
 Every statement prints "History at closing: record N • fingerprint …" (the period-close
 record's head), and "Check a statement" (Hyperbooks) matches a PDF's SHA-256 against the
 seals. A period, open or closed, also exports as CSV and as PDF, both from one sheet

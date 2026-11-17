@@ -160,6 +160,9 @@ struct Book {
     encrypted: bool,
     /// A Hyperbook whose history doesn't verify: where it breaks (guided recovery).
     broken: Option<u64>,
+    /// Closed periods may lack their statement or seal (just opened, or a save failed):
+    /// [`ensure_statements`] looks before the next change.
+    check_statements: bool,
 }
 
 /// Replay a book's history into its state.
@@ -195,6 +198,7 @@ impl Book {
             ledger,
             problem: None,
             broken: None,
+            check_statements: true,
         }
     }
 
@@ -336,6 +340,7 @@ fn load_books(dir: &Path, current: Option<&str>, log: &Log) -> Vec<Book> {
             name: None,
             encrypted,
             broken,
+            check_statements: true,
         });
     }
     out
@@ -645,6 +650,9 @@ fn add_record(
 ) -> Result<(sk_chain::Record, bool), (u16, String)> {
     let now = shared.now();
     let book = open_book(st, book_id).map_err(|(s, m)| (s, m.to_string()))?;
+    if book.check_statements {
+        ensure_statements(shared, book, now);
+    }
     let store = book
         .store
         .as_mut()
@@ -662,27 +670,13 @@ fn add_record(
         .map_err(err)?;
     let effects = book.ledger.apply(&rec).map_err(|e| (500, e.0))?;
     if let Some(statement) = effects.statement {
-        let info = store.info().clone();
-        let pdf = sk_report::statement_pdf(&statement, &info.name, info.currency)
-            .map_err(|e| (500, e))?;
-        let dir = shared.data.join(STATEMENTS_DIR).join(&info.book_id);
-        std::fs::create_dir_all(&dir).map_err(|e| (500, e.to_string()))?;
-        let name = format!(
-            "{}-{}-{}.pdf",
-            statement.agreement.0, statement.period.first, statement.period.last
-        );
-        util::write_private(&dir.join(name), &pdf).map_err(|e| (500, e))?;
-        if info.hyperbook {
-            let seal = store
-                .seal(
-                    now,
-                    statement.agreement.0,
-                    &statement.period.first.to_string(),
-                    &statement.period.last.to_string(),
-                    Some(sk_chain::Hash::of(&pdf)),
-                )
-                .map_err(err)?;
-            let _ = book.ledger.apply(&seal);
+        // the close is in the history: a statement that can't be saved now is made later
+        // from the history (review M7), never left missing
+        if let Err(e) = save_statement(shared, store, &mut book.ledger, &statement, now, true) {
+            (shared.log)(&format!(
+                "the statement couldn't be saved yet ({e}); it is made from the history later"
+            ));
+            book.check_statements = true;
         }
     }
     if fresh {
@@ -710,6 +704,91 @@ fn file_matches(shared: &Shared, book_id: &str, body: &Value) -> Result<(), Stri
         return Err("The file doesn't match its description.".into());
     }
     Ok(())
+}
+
+/// A closed period's statement PDF in the statements folder and, in a Hyperbook, its seal.
+fn save_statement(
+    shared: &Shared,
+    store: &mut Store,
+    ledger: &mut Ledger,
+    statement: &sk_ledger::Statement,
+    now: i64,
+    seal: bool,
+) -> Result<(), String> {
+    let info = store.info().clone();
+    let pdf = sk_report::statement_pdf(statement, &info.name, info.currency)?;
+    let dir = shared.data.join(STATEMENTS_DIR).join(&info.book_id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let name = format!(
+        "{}-{}-{}.pdf",
+        statement.agreement.0, statement.period.first, statement.period.last
+    );
+    let path = dir.join(name);
+    // a statement already saved stays as it is (its seal names its fingerprint)
+    let pdf = match std::fs::read(&path) {
+        Ok(kept) => kept,
+        Err(_) => {
+            util::write_private(&path, &pdf).map_err(|e| e.to_string())?;
+            pdf
+        }
+    };
+    if seal && info.hyperbook {
+        let rec = store
+            .seal(
+                now,
+                statement.agreement.0,
+                &statement.period.first.to_string(),
+                &statement.period.last.to_string(),
+                Some(sk_chain::Hash::of(&pdf)),
+            )
+            .map_err(|e| e.to_string())?;
+        let _ = ledger.apply(&rec);
+    }
+    Ok(())
+}
+
+/// Every closed period has its statement and, in a Hyperbook, its seal: a statement missing
+/// (a failed save, a lost file) is made again from the history as it was at the close.
+fn ensure_statements(shared: &Shared, book: &mut Book, now: i64) {
+    let Some(store) = book.store.as_mut() else {
+        return;
+    };
+    let Ok(records) = store.records(0, u64::MAX) else {
+        return;
+    };
+    let hyper = store.info().hyperbook;
+    let dir = shared.data.join(STATEMENTS_DIR).join(&store.info().book_id);
+    let mut replay = Ledger::new();
+    let mut all_fine = true;
+    for r in &records {
+        let Ok(effects) = replay.apply(r) else {
+            continue;
+        };
+        let Some(st) = effects.statement else {
+            continue;
+        };
+        let file = dir.join(format!(
+            "{}-{}-{}.pdf",
+            st.agreement.0, st.period.first, st.period.last
+        ));
+        let sealed = book.ledger.seals.iter().any(|s| {
+            s.agreement == st.agreement && s.first == st.period.first && s.last == st.period.last
+        });
+        if file.is_file() && (sealed || !hyper) {
+            continue;
+        }
+        match save_statement(shared, store, &mut book.ledger, &st, now, hyper && !sealed) {
+            Ok(()) => (shared.log)(&format!(
+                "made the missing statement for {} to {}",
+                st.period.first, st.period.last
+            )),
+            Err(e) => {
+                (shared.log)(&format!("a statement still can't be saved ({e})"));
+                all_fine = false;
+            }
+        }
+    }
+    book.check_statements = !all_fine;
 }
 
 /// One backup a day, made with the day's first change (`<name> backup <date>.sharekeep` in
@@ -1178,6 +1257,14 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
             let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit() || b == b'-');
             if !ok(a) || !ok(first) {
                 return fail(shared, req, 404, "No such statement.");
+            }
+            {
+                let mut st = shared.lock();
+                if let Ok(b) = open_book(&mut st, &d.book_id) {
+                    if b.check_statements {
+                        ensure_statements(shared, b, shared.now());
+                    }
+                }
             }
             let dir = shared.data.join(STATEMENTS_DIR).join(&d.book_id);
             let prefix = format!("{a}-{first}-");
