@@ -52,7 +52,7 @@ unless the book's `dispute_mode` is `held_aside`. Balances always sum to zero.
 
 ## Closing a period
 
-Closing locks the period (no new, edited or deleted entries dated in it), posts the per-period
+Closing locks the period (no new, edited or deleted entries dated in it; whether each entry counts is fixed at that moment, so a later dispute, resolution or `dispute_mode` change marks an entry but never changes a closed period's numbers), posts the per-period
 cap adjustments, and produces the statement: total and by category, per member what they paid,
 their share, payments made or received, cap adjustments and running balance, every entry
 (disputed ones marked), and the payments that settle everyone up. Event entries settle on

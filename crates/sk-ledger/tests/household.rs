@@ -672,3 +672,56 @@ fn the_hub_computer_cant_approve_or_turn_on_a_keeper_later() {
         .unwrap_err()
         .contains("before the first rule"));
 }
+
+#[test]
+fn a_closed_periods_numbers_never_change() {
+    let mut b = household();
+    approved_rule(&mut b, equal_rule(1, "Shared", "2027-01-01", &[]));
+    b.add(
+        day(1, 1),
+        None,
+        "setting",
+        json!({"key": "dispute_mode", "value": "held_aside"}),
+    );
+    let kept = b.add(
+        day(1, 3),
+        Some(SAM),
+        "expense",
+        expense("2027-01-03", 3000, SAM, "Dinner"),
+    );
+    let held = b.add(
+        day(1, 4),
+        Some(SAM),
+        "expense",
+        expense("2027-01-04", 600, SAM, "Snacks"),
+    );
+    b.add(day(1, 5), Some(JERRY), "dispute", json!({"target": held}));
+    b.add(
+        day(2, 1),
+        Some(SAM),
+        "period-close",
+        json!({"agreement": 1, "date": "2027-01-01"}),
+    );
+    let closed = b.balance(SAM);
+    assert_eq!(closed, 2000);
+    // disputing a closed entry marks it, but what counted stays
+    b.add(day(2, 2), Some(JERRY), "dispute", json!({"target": kept}));
+    assert!(b.ledger.entries[&kept].disputed);
+    assert_eq!(b.balance(SAM), closed);
+    // resolving the one held aside at close doesn't bring it back either
+    b.add(
+        day(2, 2),
+        Some(JERRY),
+        "dispute",
+        json!({"target": held, "resolved": true}),
+    );
+    assert_eq!(b.balance(SAM), closed);
+    // nor does changing how disputes count
+    b.add(
+        day(2, 3),
+        None,
+        "setting",
+        json!({"key": "dispute_mode", "value": "in_balances"}),
+    );
+    assert_eq!(b.balance(SAM), closed);
+}

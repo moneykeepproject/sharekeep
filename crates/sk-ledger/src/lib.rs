@@ -98,6 +98,10 @@ pub struct Entry {
     /// Pictures and PDFs attached to it, oldest first.
     #[serde(default)]
     pub attachments: Vec<FileRef>,
+    /// Whether it counted when its period closed: a closed period's numbers never change
+    /// after that, whatever is disputed or set later (review M5).
+    #[serde(default)]
+    pub counted_at_close: Option<bool>,
 }
 
 /// A file attached to an entry.
@@ -811,6 +815,7 @@ impl Ledger {
                         deleted: false,
                         edited_by: None,
                         attachments: Vec::new(),
+                        counted_at_close: None,
                     },
                 );
             }
@@ -1193,6 +1198,7 @@ impl Ledger {
             deleted: false,
             edited_by: None,
             attachments: Vec::new(),
+            counted_at_close: None,
         })
     }
 
@@ -1322,6 +1328,9 @@ impl Ledger {
     }
 
     fn counts(&self, e: &Entry) -> bool {
+        if let Some(c) = e.counted_at_close {
+            return c;
+        }
         !e.deleted && !(e.disputed && self.dispute_mode == DisputeMode::HeldAside)
     }
 
@@ -1416,6 +1425,18 @@ impl Ledger {
             seq,
             adjustments,
         });
+        // what counted is fixed now
+        let fixed: Vec<(u64, bool)> = self
+            .entries
+            .values()
+            .filter(|e| e.agreement == b.agreement && span.contains(e.date))
+            .map(|e| (e.seq, self.counts(e)))
+            .collect();
+        for (seq, c) in fixed {
+            if let Some(e) = self.entries.get_mut(&seq) {
+                e.counted_at_close = Some(c);
+            }
+        }
         Ok(statement::build(
             self,
             b.agreement,
