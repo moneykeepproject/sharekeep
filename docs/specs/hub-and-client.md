@@ -16,7 +16,11 @@ pairing code copied from MoneyKeep).
     workers paired devices need; refused ones are closed and answered 503;
   - the certificate page: plain HTTP on `<hub address>:15080` — `/` (steps for Android,
     iPhone/iPad and computers, the fingerprint), `/sharekeep-ca.crt`,
-    `/sharekeep-ca.mobileconfig`; anything else redirects to HTTPS. A small front passes
+    `/sharekeep-ca.mobileconfig`; anything else redirects to HTTPS. The page (and the steps
+    in `sk_view::phone`, shared with the desktop's EZ Start) has the person **compare the
+    fingerprint with the hub computer first**, and says to stop if it differs, before any
+    download button: pairing starts on plain HTTP, and that comparison is what tells the
+    real hub from another device answering for it (review M8). A small front passes
     it to its own loopback server: at most 32 connections, 8 from one address, each closed
     after 15 s without traffic;
   - the hub computer's desktop app: plain HTTP on `127.0.0.1:15081`, with the admin token

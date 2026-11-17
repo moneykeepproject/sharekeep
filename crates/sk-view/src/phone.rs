@@ -2,17 +2,21 @@
 //! the phone, and the desktop's EZ Start shows on the hub computer (step 5a–5f), from this one
 //! copy so they never disagree. `**…**` marks words to show in bold.
 
+/// Before downloading anything: the phone must be talking to the real hub (review M8).
+pub const COMPARE: &str = "**Compare** the fingerprint on the page with the one on the hub computer, digit for digit. If they differ, stop: don't download anything.";
+
 /// iPhone or iPad: trusting the hub's certificate.
 pub const APPLE: [&str; 5] = [
     "Open the page in **Safari** (the Camera app opens Safari).",
+    COMPARE,
     "Tap **Download certificate (iPhone or iPad)**, then **Allow**.",
     "Open **Settings**: tap **Profile Downloaded** near the top (or **General** > **VPN & Device Management**), then **Install**, and enter the phone's passcode.",
     "Open **Settings** > **General** > **About** > **Certificate Trust Settings** and turn on full trust for “ShareKeep Hub CA”.",
-    "Compare the fingerprint on the page with the one on the hub computer.",
 ];
 
 /// Android phone or tablet: trusting the hub's certificate.
-pub const ANDROID: [&str; 5] = [
+pub const ANDROID: [&str; 6] = [
+    COMPARE,
     "Tap **Download certificate (Android)**. If Chrome asks, keep the file.",
     "Open **Settings** > **Security** (or **Security & privacy**) > **More security settings** > **Encryption & credentials**. The words differ a little between phone makers; searching Settings for “certificate” also finds it.",
     "Tap **Install a certificate** > **CA certificate**, then **Install anyway**.",
@@ -55,7 +59,7 @@ mod tests {
     #[test]
     fn steps_read_as_plain_text_and_as_html() {
         assert_eq!(
-            plain(APPLE[1]),
+            plain(APPLE[2]),
             "Tap Download certificate (iPhone or iPad), then Allow."
         );
         assert_eq!(

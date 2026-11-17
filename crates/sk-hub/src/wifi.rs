@@ -636,9 +636,12 @@ ol {{ padding-left:22px; }} li {{ margin:6px 0; }}
 <h1>ShareKeep household hub</h1>
 <p class="muted">Step 1 of 2 on this device: trust the hub's certificate, so ShareKeep can open securely at <b>https://{host}:{port}</b>.</p>
 <div class="card">
-<div class="muted">Certificate</div><div><b>{ca}</b></div>
-<div class="muted" style="margin-top:8px">Fingerprint (SHA-256, first 32 digits) — it must match the one ShareKeep shows on the hub computer:</div>
+<h2 style="margin-top:0">First, compare</h2>
+<p>Look at the hub computer's screen (ShareKeep, Hub tab). Its fingerprint must be exactly these digits:</p>
 <div class="fp">{fp}</div>
+<p class="muted">If even one differs, stop and don't download anything: another device on the Wi-Fi is answering for the hub, and it would see the household PIN.</p>
+<div class="muted">Certificate</div><div><b>{ca}</b></div>
+<p>They match? Then download it:</p>
 <a class="button" href="{crt}">Download certificate (Android)</a>
 <a class="button" href="{mc}">Download certificate (iPhone or iPad)</a>
 <p class="muted">The certificate is only valid for the hub computer's address ({ip}{name}). It cannot be used for any other website.</p>
