@@ -206,7 +206,11 @@ pub fn rules(l: &Ledger, a: AgreementId, today: NaiveDate) -> Vec<RuleRow> {
     }
     ids.into_iter()
         .filter_map(|id| {
-            let v = ag.rules.rule_at(id, today)?;
+            // in force today, or else its first version, which starts later
+            let v = ag.rules.rule_at(id, today).or_else(|| {
+                let first = ag.rules.versions(id).first()?.effective;
+                ag.rules.rule_at(id, first)
+            })?;
             let who: Vec<String> = v
                 .rule
                 .participants()
@@ -223,13 +227,102 @@ pub fn rules(l: &Ledger, a: AgreementId, today: NaiveDate) -> Vec<RuleRow> {
                 name: v.rule.name.clone(),
                 method: v.rule.method.label().into(),
                 detail: format!(
-                    "{} · since {}{fallback}",
+                    "{} · {} {}{fallback}",
                     who.join(", "),
+                    if v.effective > today {
+                        "starts"
+                    } else {
+                        "since"
+                    },
                     v.effective.format("%b %-d, %Y")
                 ),
             })
         })
         .collect()
+}
+
+/// What a new rule proposal is and from when: (rule id, effective date, starts now). While
+/// no rule is in force today (an agreement's first rule, or one that starts later), the
+/// proposal applies from the current period, so today's expenses can be divided: a new
+/// version of the default rule when there is one, else a new rule. Any other rule starts with
+/// the next period, so a period is never divided two ways.
+pub fn proposal_target(l: &Ledger, a: AgreementId, today: NaiveDate) -> (RuleId, NaiveDate, bool) {
+    let next_id = l
+        .proposals
+        .values()
+        .filter_map(|p| match &p.kind {
+            ProposalKind::Rule(r) if r.agreement == a => Some(r.rule_id.0),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let Some(ag) = l.agreements.get(&a) else {
+        return (RuleId(next_id), today, true);
+    };
+    let current = ag.schedule.period_containing(today);
+    let now = current.as_ref().map_or(today, |p| p.first);
+    let next = current.and_then(|p| p.last.succ_opt()).unwrap_or(today);
+    match ag.rules.fallback() {
+        None => (RuleId(next_id), now, true),
+        Some(id) if ag.rules.rule_at(id, today).is_none() => {
+            // a version from that date may exist already: then the day after the
+            // period's start is still in this period
+            let taken = ag.rules.versions(id).iter().any(|v| v.effective == now);
+            (id, if taken { today } else { now }, true)
+        }
+        Some(_) => (RuleId(next_id), next, false),
+    }
+}
+
+/// Why no rule divides this expense, in plain words, when that's what stops it (and the
+/// screens then offer "Propose how it's split"); `None` when a rule applies or something
+/// else is wrong.
+pub fn rule_missing(l: &Ledger, e: &Expense) -> Option<String> {
+    let ag = l.agreements.get(&e.agreement)?;
+    match ag.rules.resolve(&e.category, e.date, e.rule) {
+        Ok(_) => return None,
+        Err(sk_split::SplitError::NoRuleFor(_)) | Err(sk_split::SplitError::RuleNotInForce(..)) => {
+        }
+        Err(_) => return None,
+    }
+    let day = e.date.format("%b %-d").to_string();
+    // a rule proposal still waiting for approvals
+    let waiting = l.proposals.values().find_map(|p| match &p.kind {
+        ProposalKind::Rule(r)
+            if r.agreement == e.agreement && p.status == ProposalStatus::Waiting =>
+        {
+            let who: Vec<String> = p
+                .approvers
+                .iter()
+                .filter(|m| !p.approved.contains(m))
+                .map(|m| name(l, *m))
+                .collect();
+            Some((r.rule.name.clone(), who))
+        }
+        _ => None,
+    });
+    if let Some((rule, who)) = waiting {
+        return Some(format!(
+            "No rule divides expenses on {day} yet. “{rule}” waits for approval from {}: they approve it under Approvals on their device.",
+            who.join(" and ")
+        ));
+    }
+    if let Some(id) = ag.rules.fallback() {
+        if let Some(v) = ag.rules.versions(id).first() {
+            if v.effective > e.date {
+                return Some(format!(
+                    "No rule divides expenses on {day} yet: “{}” starts on {}. Propose how expenses are split from this period on.",
+                    v.rule.name,
+                    v.effective.format("%b %-d, %Y")
+                ));
+            }
+        }
+    }
+    Some(format!(
+        "No rule divides expenses in {} yet. Propose how they're split; everyone else in the agreement approves it.",
+        ag.name
+    ))
 }
 
 /// Members' balances and the payments that would settle everyone up.
@@ -1098,6 +1191,8 @@ pub struct AgreementView {
     /// The next rule id and when a new rule would start (the next period).
     pub next_rule: RuleId,
     pub next_period: NaiveDate,
+    /// The next proposal applies from the current period (no rule is in force yet).
+    pub rule_starts_now: bool,
     pub expected: Vec<ExpectedRow>,
     pub deposits: Vec<DepositRow>,
     pub recurring: Vec<RecurringRow>,
@@ -1195,16 +1290,7 @@ pub fn snapshot(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> Sn
                 .into_iter()
                 .find(|t| t.from == me)
                 .map(|t| (t.to, t.amount));
-            let next_rule = l
-                .proposals
-                .values()
-                .filter_map(|p| match &p.kind {
-                    ProposalKind::Rule(r) if r.agreement == a.id => Some(r.rule_id.0),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0)
-                + 1;
+            let target = proposal_target(l, a.id, today);
             let current = a.schedule.period_containing(today);
             AgreementView {
                 id: a.id,
@@ -1224,8 +1310,9 @@ pub fn snapshot(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> Sn
                 settle,
                 periods: periods(l, a.id, today, 5),
                 i_owe,
-                next_rule: RuleId(next_rule),
-                next_period: current.and_then(|p| p.last.succ_opt()).unwrap_or(today),
+                next_rule: target.0,
+                next_period: target.1,
+                rule_starts_now: target.2,
                 expected: expected(l, a.id, me, cur, today),
                 deposits: deposits(l, a.id, me, cur),
                 recurring: recurring(l, a.id, cur),

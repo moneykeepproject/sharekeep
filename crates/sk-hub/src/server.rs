@@ -842,18 +842,30 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
             // a rule by days or usage asks for them: the answer says what's needed
             match device_view(shared, d, |l, cur, _| {
                 let needs = sk_view::view::needs(l, &b.expense);
-                (needs, sk_view::view::preview(l, me, cur, b.expense))
+                let no_rule = sk_view::view::rule_missing(l, &b.expense);
+                (
+                    needs,
+                    no_rule,
+                    sk_view::view::preview(l, me, cur, b.expense),
+                )
             }) {
-                Ok((needs, Ok(rows))) => {
+                Ok((needs, _, Ok(rows))) => {
                     send(shared, req, 200, &json!({ "rows": rows, "needs": needs }))
                 }
-                Ok((Some(needs), Err(why))) => send(
+                // no rule divides it yet: why, so the app offers to propose one
+                Ok((_, Some(no_rule), Err(_))) => send(
+                    shared,
+                    req,
+                    200,
+                    &json!({ "rows": [], "error": no_rule, "no_rule": true }),
+                ),
+                Ok((Some(needs), None, Err(why))) => send(
                     shared,
                     req,
                     200,
                     &json!({ "rows": [], "needs": needs, "error": why }),
                 ),
-                Ok((None, Err(why))) => fail(shared, req, 422, &why),
+                Ok((None, None, Err(why))) => fail(shared, req, 422, &why),
                 Err((s, m)) => fail(shared, req, s, &m),
             }
         }

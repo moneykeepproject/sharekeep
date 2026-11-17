@@ -429,3 +429,111 @@ fn exact_amounts_and_itemized_rules_from_the_editor() {
         );
     }
 }
+
+#[test]
+fn a_bill_before_the_first_rule_starts_can_be_divided_once_a_rule_is_proposed() {
+    use serde_json::json;
+    use sk_chain::{next, Author, Record};
+    let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+    let today = d("2026-11-17");
+    let ts = today
+        .and_hms_opt(12, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis();
+    let jerry = || Author {
+        member: Some(JERRY),
+        device: "t".into(),
+    };
+    let mut records: Vec<Record> = Vec::new();
+    let add = |records: &mut Vec<Record>, author: Author, kind: &str, body: serde_json::Value| {
+        let r = next(records.last(), ts, author, kind, body).unwrap();
+        records.push(r);
+    };
+    add(
+        &mut records,
+        Author::hub(),
+        sk_chain::GENESIS,
+        json!({"name": "Home"}),
+    );
+    add(
+        &mut records,
+        Author::hub(),
+        "member-add",
+        json!({"id": 1, "name": "Jerry"}),
+    );
+    add(
+        &mut records,
+        Author::hub(),
+        "member-add",
+        json!({"id": 2, "name": "Sam"}),
+    );
+    add(
+        &mut records,
+        Author::hub(),
+        "agreement-add",
+        json!({"id": 1, "name": "Apartment", "members": {"1": "2026-11-01", "2": "2026-11-01"},
+               "schedule": {"Monthly": {"start": "2026-11-01", "day": {"Day": 1}, "every": 1}}}),
+    );
+    // a one-keeper household, so Jerry's proposals are in force at once
+    add(
+        &mut records,
+        Author::hub(),
+        "setting",
+        json!({"key": "one_keeper", "value": 1}),
+    );
+    // the first rule, proposed from the Rules tab as before: from the next period
+    add(
+        &mut records,
+        jerry(),
+        "rule-proposal",
+        json!({"agreement": 1, "rule_id": 1, "effective": "2026-12-01",
+               "rule": {"name": "Shared", "method": "Equal", "members": [1, 2]}}),
+    );
+    let (l, skipped) = sk_ledger::Ledger::replay(&records);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    let bill = sk_ledger::bodies::Expense {
+        agreement: A,
+        date: today,
+        amount: 7000,
+        payer: sk_ledger::bodies::Payer::Member(JERRY),
+        category: "Internet".into(),
+        note: None,
+        rule: None,
+        event: None,
+        items: Vec::new(),
+        days: Default::default(),
+        usage: Default::default(),
+        due: None,
+    };
+    // what Jerry saw: the bill can't be divided; now it says why, in words
+    assert!(view::preview(&l, JERRY, usd(), bill.clone()).is_err());
+    let why = view::rule_missing(&l, &bill).unwrap();
+    assert!(why.contains("“Shared” starts on Dec 1, 2026"), "{why}");
+    // the rules list shows the rule that starts later
+    let rules = view::rules(&l, A, today);
+    assert_eq!(rules.len(), 1);
+    assert!(
+        rules[0].detail.contains("starts Dec 1, 2026"),
+        "{}",
+        rules[0].detail
+    );
+    // proposing now: an earlier version of that rule, from this period
+    let (id, from, now) = view::proposal_target(&l, A, today);
+    assert_eq!((id.0, from, now), (1, d("2026-11-01"), true));
+    add(
+        &mut records,
+        jerry(),
+        "rule-proposal",
+        json!({"agreement": 1, "rule_id": id.0, "effective": from,
+               "rule": {"name": "Shared", "method": "Equal", "members": [1, 2]}}),
+    );
+    let (l, skipped) = sk_ledger::Ledger::replay(&records);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    let rows = view::preview(&l, JERRY, usd(), bill.clone()).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(view::rule_missing(&l, &bill), None);
+    // and from now on rules start with the next period again
+    let (_, from, now) = view::proposal_target(&l, A, today);
+    assert_eq!((from, now), (d("2026-12-01"), false));
+}

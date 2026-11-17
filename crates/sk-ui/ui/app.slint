@@ -324,6 +324,9 @@ export component AppWindow inherits Window {
     in property <[ChoiceS]> rule-methods;
     in property <[WeightS]> rule-weights;
     in property <bool> rule-exact;
+    in property <string> rule-when;
+    in property <string> exp-no-rule;
+    callback propose-for-expense();
 
     // one form sheet for the agreement's other changes (deposits, recurring bills, events,
     // the schedule, joining and leaving): the controller sets which fields it shows
@@ -1073,7 +1076,9 @@ export component AppWindow inherits Window {
         Card {
             SectionTitle { text: "How it divides"; }
             SplitList { rows: root.exp-preview; }
-            if root.exp-error != "": Text { text: root.exp-error; color: Theme.red; wrap: word-wrap; }
+            if root.exp-no-rule != "": Text { text: root.exp-no-rule; color: Theme.amber; wrap: word-wrap; }
+            if root.exp-no-rule != "": BigButton { text: "Propose how it's split"; primary: false; clicked => { root.propose-for-expense(); } }
+            if root.exp-error != "" && root.exp-no-rule == "": Text { text: root.exp-error; color: Theme.red; wrap: word-wrap; }
         }
         BigButton { text: "Save"; enabled: root.exp-error == "" && root.exp-preview.length > 0; clicked => { root.save-expense(); } }
     }
@@ -1158,7 +1163,7 @@ export component AppWindow inherits Window {
                 SplitList { rows: e.rows; }
             }
         }
-        Hint { text: "Everyone else in the agreement approves it before it takes effect. It starts with the next period."; }
+        Hint { text: root.rule-when; }
         BigButton { text: "Propose"; enabled: root.rule-error == "" && root.rule-name != ""; clicked => { root.propose-rule(); } }
     }
 

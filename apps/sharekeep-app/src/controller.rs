@@ -6,8 +6,8 @@ use crate::worker::{AdminThen, Job, Outcome};
 use chrono::{Datelike, NaiveDate};
 use serde_json::{json, Value};
 use sk_client::{Client, HubAddress};
-use sk_core::{AgreementId, Currency, MemberId, RuleId};
-use sk_ledger::{Ledger, ProposalKind};
+use sk_core::{AgreementId, Currency, MemberId};
+use sk_ledger::Ledger;
 use sk_ui::phone as view_phone;
 use sk_ui::view::{self, RuleDraft, EDITOR_METHODS};
 use sk_ui::*;
@@ -1218,6 +1218,12 @@ impl State {
         if !ui.get_exp_open() {
             return;
         }
+        // no rule divides it yet: say why, and offer to propose one
+        let missing = self
+            .expense_body(ui)
+            .ok()
+            .and_then(|e| view::rule_missing(&self.ledger, &e));
+        ui.set_exp_no_rule(s(missing.unwrap_or_default()));
         ui.set_exp_payers(self.chips(self.exp_payer));
         // ask for days or usage when the category's rule divides by them
         let needs = self
@@ -1477,8 +1483,29 @@ impl State {
         self.draft = Some(RuleDraft::new(&self.ledger, a));
         ui.set_rule_name(s(""));
         ui.set_rule_categories(s(""));
+        let (_, from, now) = view::proposal_target(&self.ledger, a, self.today);
+        ui.set_rule_when(s(if now {
+            format!(
+                "No rule is in force yet, so this one applies from this period ({}), once everyone else in the agreement approves it.",
+                from.format("%b %-d, %Y")
+            )
+        } else {
+            format!(
+                "Everyone else in the agreement approves it before it takes effect. It starts with the next period ({}).",
+                from.format("%b %-d, %Y")
+            )
+        }));
         ui.set_rule_open(true);
         self.refresh_rule(ui);
+    }
+
+    /// From the expense sheet, when no rule divides the expense: the rule editor, with the
+    /// expense's category as one the rule is the default for.
+    pub fn propose_for_expense(&mut self, ui: &AppWindow) {
+        let category = ui.get_exp_category().trim().to_string();
+        ui.set_exp_open(false);
+        self.open_rule(ui);
+        ui.set_rule_categories(s(category));
     }
 
     pub fn rule_edit(&mut self, ui: &AppWindow, f: impl FnOnce(&mut RuleDraft)) {
@@ -1562,32 +1589,15 @@ impl State {
         let (Some(a), Some(d)) = (self.agreement, self.draft.as_ref()) else {
             return;
         };
-        // a new rule id; it takes effect with the next period
-        let next_id = self
-            .ledger
-            .proposals
-            .values()
-            .filter_map(|p| match &p.kind {
-                ProposalKind::Rule(r) if r.agreement == a => Some(r.rule_id.0),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let effective = self
-            .ledger
-            .agreements
-            .get(&a)
-            .and_then(|g| g.schedule.period_containing(self.today))
-            .and_then(|p| p.last.succ_opt())
-            .unwrap_or(self.today);
+        // the next period, or this one while no rule is in force yet (view::proposal_target)
+        let (rule_id, effective, _) = view::proposal_target(&self.ledger, a, self.today);
         let categories: Vec<String> = ui
             .get_rule_categories()
             .split(',')
             .map(|c| c.trim().to_string())
             .filter(|c| !c.is_empty())
             .collect();
-        let body = d.proposal(a, RuleId(next_id), effective, &categories);
+        let body = d.proposal(a, rule_id, effective, &categories);
         ui.set_rule_open(false);
         self.send(Job::Send {
             kind: "rule-proposal".into(),

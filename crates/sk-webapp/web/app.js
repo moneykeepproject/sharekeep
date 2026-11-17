@@ -954,6 +954,13 @@ function expenseSheet(a, due, editing) {
           drawNeeds(p.needs);
           preview.replaceChildren(...p.rows.map((r) => kv(r.name, r.amount)));
           err.textContent = p.error || '';
+          // no rule divides it yet: offer to propose one, with this category
+          if (p.no_rule) {
+            preview.append(h('button', { class: 'btn secondary', onclick: () => {
+              $('#sheet').hidden = true;
+              ruleSheet(a, b.category);
+            } }, "Propose how it's split"));
+          }
           save.disabled = !!p.error;
         } catch (x) {
           // offline: no preview, but it can still wait in the outbox
@@ -1162,9 +1169,9 @@ function recurringSheet(a) {
 }
 
 // The rule editor: the same behaviour as the desktop app's RuleDraft (sk-view).
-function ruleSheet(a) {
+function ruleSheet(a, category) {
   const d = {
-    name: '', categories: '', method: 0,
+    name: '', categories: category || '', method: 0,
     rows: a.people.map((p) => ({ id: p.id, name: p.name, value: 1, included: true, locked: false, amount: '', remainder: false })),
   };
   const setMethod = (m) => {
@@ -1265,9 +1272,11 @@ function ruleSheet(a) {
     };
     body.append(
       field('Name', '', (v) => { d.name = v; propose.disabled = !v.trim(); }, { placeholder: 'Internet' }),
-      field("Categories it's the default for (comma-separated)", '', (v) => { d.categories = v; }, { placeholder: 'Rent, Utilities' }),
+      field("Categories it's the default for (comma-separated)", d.categories, (v) => { d.categories = v; }, { placeholder: 'Rent, Utilities' }),
       h('label', { class: 'field' }, 'Method'), methods, rows, examples,
-      h('p', { class: 'hint' }, 'Everyone else in the agreement approves it before it takes effect. It starts with the next period (' + a.next_period + ').'),
+      h('p', { class: 'hint' }, a.rule_starts_now
+        ? 'No rule is in force yet, so this one applies from this period (' + a.next_period + '), once everyone else in the agreement approves it.'
+        : 'Everyone else in the agreement approves it before it takes effect. It starts with the next period (' + a.next_period + ').'),
       propose);
     propose.onclick = async () => {
       const categories = d.categories.split(',').map((c) => c.trim()).filter(Boolean);

@@ -198,6 +198,7 @@ fn wire(ui: &AppWindow) {
     on!(on_hub_close_book, |st, u| st.hub_close_book(u));
     on!(on_ez_back, |st, u| st.ez_back(u));
     on!(on_hub_refresh, |st, _u| st.hub_status());
+    on!(on_propose_for_expense, |st, u| st.propose_for_expense(u));
     on!(on_ez_pair_another, |st, u| st.ez_pair_another(u));
     on!(on_ez_next, |st, u| st.ez_next(u));
     on!(on_ez_finish, |st, u| st.ez_finish(u));

@@ -102,6 +102,17 @@ When a period closes and the book's `deposit_interest_bp` setting is above 0, ea
 is credited simple interest on its balance for the period's days (rounded down to the cent),
 shared by the members' stakes. Replaying the history gives the same amounts.
 
+## When a new rule starts
+
+A rule proposal starts with the next period, so a period is never divided two ways. The
+exception is while no rule is in force today (an agreement's first rule, or a first rule that
+starts later): then the proposal applies from the current period (`sk_view::view::
+proposal_target`), as an earlier version of the default rule when there is one, so today's
+bills can be divided. When no rule divides an expense, the expense sheet says why in words
+(`rule_missing`: the waiting rule and who must approve it, or when the rule starts) and offers
+"Propose how it's split", with the expense's category filled in. The Rules tab lists rules that
+start later ("starts Dec 1").
+
 ## Screens
 
 The rule editor (desktop and web) offers every method: equal, percentages, shares, by income,
