@@ -10,3 +10,16 @@ at your option.
 
 ShareKeep keeps a household's shared expenses for record-keeping; it is not
 financial, tax or legal advice.
+
+ShareKeep is an independent project and is not affiliated with or endorsed by
+any other software vendor.
+
+The app's user interface is drawn with Slint (https://slint.dev), used under the
+Slint Royalty-free License 2.0, as in the other MoneyKeep family apps. As that
+licence requires, ShareKeep shows Slint's "About Slint" in Settings > About.
+ShareKeep does not redistribute Slint on its own and does not expose Slint's APIs
+to scripts or plugins. ShareKeep's own code stays MIT OR Apache-2.0.
+
+Every third-party crate compiled into the programs is listed with its version,
+its licence and the licence texts it ships in THIRD-PARTY-LICENSES.txt, installed
+beside the programs.

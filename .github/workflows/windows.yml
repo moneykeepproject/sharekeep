@@ -1,0 +1,74 @@
+# The Windows setup built and run for real on a GitHub-hosted runner (administrator, services,
+# %ProgramData%): install with the hub, upgrade, upgrade with ShareKeep open, uninstall, install
+# again. scripts/ci/windows-install.ps1 describes each scenario. Modelled on MoneyKeep's
+# windows.yml.
+name: windows
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch (or pull request) cancels this run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  setup:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain (1.97.0)
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+
+      - name: NSIS
+        run: |
+          $nsis = @("${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe")
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not ($nsis | Where-Object { Test-Path $_ })) {
+            choco install nsis -y --no-progress
+          }
+
+      # the version functions, the signing rules and the script compiling with stand-ins
+      - name: Test the setup task
+        run: cargo test -p xtask --locked
+
+      - name: Build the setup
+        run: cargo xtask installer
+
+      - name: "Install with the household hub"
+        run: ./scripts/ci/windows-install.ps1 -Scenario install
+
+      - name: "Upgrade: the hub stays, with the same certificate"
+        run: ./scripts/ci/windows-install.ps1 -Scenario upgrade
+
+      - name: "Upgrade with ShareKeep open"
+        run: ./scripts/ci/windows-install.ps1 -Scenario app-open
+
+      - name: "Uninstall: the books stay"
+        run: ./scripts/ci/windows-install.ps1 -Scenario uninstall
+
+      - name: "Install again: the same certificate"
+        run: ./scripts/ci/windows-install.ps1 -Scenario reinstall
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-setup-logs
+          path: ${{ runner.temp }}/sk-artifacts
+          if-no-files-found: warn

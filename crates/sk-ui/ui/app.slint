@@ -1,7 +1,7 @@
 // ShareKeep screens: one column of cards in the Capture style, centred and capped in width on a
 // desktop. Bottom tabs: Home, Approvals, Settings (and Hub on the hub computer).
 
-import { LineEdit, Slider, Switch, ScrollView, Palette } from "std-widgets.slint";
+import { LineEdit, Slider, Switch, ScrollView, Palette, AboutSlint } from "std-widgets.slint";
 import { Theme, Card, SectionTitle, Hint, FieldLabel, BigButton, LinkButton, Chip, Badge, NavTab, KeyValue, Stat } from "components.slint";
 
 export { Theme }
@@ -923,7 +923,9 @@ export component AppWindow inherits Window {
                 }
                 Card {
                     SectionTitle { text: "About"; }
-                    Hint { text: "ShareKeep, part of the MoneyKeep family. MIT OR Apache-2.0. Built with Slint."; }
+                    Hint { text: "ShareKeep, part of the MoneyKeep family. MIT OR Apache-2.0. The third-party licences are in THIRD-PARTY-LICENSES.txt, beside the program."; }
+                    // the Slint Royalty-free License 2.0 asks for this (NOTICE)
+                    AboutSlint { height: 120px; }
                 }
             }
 

@@ -4,7 +4,11 @@
 //! cargo xtask ci          fmt check, clippy -D warnings, tests, then the two rule checks
 //! cargo xtask workflows   only release.yml may name the project's own Mac (self-hosted)
 //! cargo xtask guards      file dialogs only through a `dialogs.rs` module (the macOS lesson)
+//! cargo xtask installer   the Windows setup (installer.rs)
 //! ```
+
+mod installer;
+mod licences;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,8 +21,12 @@ fn main() -> ExitCode {
         "ci" => ci(&root),
         "workflows" => report(check_workflows(&root)),
         "guards" => report(check_guards(&root)),
+        "installer" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            installer::installer(&root, &rest)
+        }
         _ => {
-            eprintln!("usage: cargo xtask <ci|workflows|guards>");
+            eprintln!("usage: cargo xtask <ci|workflows|guards|installer>");
             return ExitCode::from(2);
         }
     };
@@ -31,7 +39,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn workspace_root() -> PathBuf {
+pub fn workspace_root() -> PathBuf {
     // At run time, not build time: a shared target folder may hold an xtask built from
     // another checkout.
     let manifest =
