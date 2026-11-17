@@ -20,7 +20,8 @@ pairing code copied from MoneyKeep).
     in `sk_view::phone`, shared with the desktop's EZ Start) has the person **compare the
     fingerprint with the hub computer first**, and says to stop if it differs, before any
     download button: pairing starts on plain HTTP, and that comparison is what tells the
-    real hub from another device answering for it (review M8). A small front passes
+    real hub from another device answering for it (review M8). A newly paired device works at once: the owner decided
+    (2026-11-17) against a confirmation click on the hub computer. A small front passes
     it to its own loopback server: at most 32 connections, 8 from one address, each closed
     after 15 s without traffic;
   - the hub computer's desktop app: plain HTTP on `127.0.0.1:15081`, with the admin token
