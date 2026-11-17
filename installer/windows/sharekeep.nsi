@@ -298,6 +298,18 @@ Section /o "Desktop shortcut" SecDesktop
 SectionEnd
 
 Section /o "Household hub on this computer" SecHub
+  ; the service runs the hub program from the install folder: only Program Files is locked
+  ; against ordinary programs (review L14)
+  StrLen $5 "$PROGRAMFILES64"
+  StrCpy $4 "$INSTDIR" $5
+  ${If} $4 != "$PROGRAMFILES64"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "The household hub needs ShareKeep installed in $PROGRAMFILES64 (the service runs it from there, where ordinary programs can't change it). Run this setup again and keep the suggested folder." /SD IDOK
+    ${If} ${Silent}
+      SetErrorLevel ${EXIT_FAILED}
+      Quit
+    ${EndIf}
+    Goto hubdone
+  ${EndIf}
   ; a data folder that isn't the hub's own (anything in it owned by someone other than the
   ; administrators, SYSTEM or a service, or a link) is moved aside, never trusted (review H2)
   DetailPrint "Checking the household hub's folder"

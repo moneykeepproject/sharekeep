@@ -104,6 +104,8 @@ pub fn agreement_schedule(
 pub type NeedRow = (MemberId, String, String);
 
 pub struct State {
+    /// Records of the history this version didn't apply, said on the screen.
+    pub skipped_note: Option<String>,
     /// A file asked to be taken off an expense (the next click on it does it).
     pub armed_detach: Option<(i32, String)>,
     pub dir: PathBuf,
@@ -206,6 +208,7 @@ impl State {
             .map(|b| currency(&b.currency))
             .unwrap_or(Currency::ALL[0]);
         State {
+            skipped_note: None,
             armed_detach: None,
             dir,
             cfg,
@@ -329,7 +332,18 @@ impl State {
             Outcome::Paired(Err(e)) => ui.set_connect_error(s(e)),
             Outcome::Synced(sync) => {
                 if let Some(records) = sync.records {
-                    self.ledger = Ledger::replay(&records).0;
+                    self.skipped_note = None;
+                    let (ledger, skipped) = Ledger::replay(&records);
+                    // records this version doesn't apply: said, never silent (review L12)
+                    if !skipped.is_empty() {
+                        self.skipped_note = Some(format!(
+                            "{} record(s) in the household's history don't apply on this device (the first is record {}: {}). Its balances may differ from the hub's: update ShareKeep, then Verify the book.",
+                            skipped.len(),
+                            skipped[0].0,
+                            skipped[0].1 .0
+                        ));
+                    }
+                    self.ledger = ledger;
                     self.records = records;
                 }
                 self.restore = sync.restore;
@@ -343,7 +357,7 @@ impl State {
                 }
                 self.pending = sync.pending;
                 self.refused = sync.refused;
-                self.problem = sync.problem;
+                self.problem = sync.problem.or_else(|| self.skipped_note.clone());
                 self.offline = sync.offline;
             }
             Outcome::Sent(Ok(m)) | Outcome::Admin(AdminThen::Done(m), Ok(_)) => {

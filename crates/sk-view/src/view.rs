@@ -205,7 +205,16 @@ pub fn activity(l: &Ledger, a: AgreementId, me: MemberId, cur: Currency) -> Vec<
                         .clone()
                         .filter(|n| !n.trim().is_empty())
                         .unwrap_or_else(|| expense.category.clone()),
-                    detail: format!("Paid by {by} · your share {}{event}", money(cur, mine)),
+                    detail: format!(
+                        "Paid by {by} · your share {}{event}{}",
+                        money(cur, mine),
+                        match (e.editor, e.edited_by) {
+                            (Some(m), _) if Some(m) != e.author =>
+                                format!(" · changed by {}", name(l, m)),
+                            (_, Some(_)) => " · changed".to_string(),
+                            _ => String::new(),
+                        }
+                    ),
                     amount: money(cur, expense.amount),
                     disputed: e.disputed,
                     editable: !closed(e.date),

@@ -75,7 +75,11 @@ const MAX_PAGE: u64 = 1000;
 const CODE_MINUTES: i64 = 10;
 const CODE_TRIES: u32 = 5;
 const FAILURE_WINDOW_MS: i64 = 10 * 60 * 1000;
+/// Wrong tries from one address before pairing pauses for that address (review L8: one guest
+/// paused pairing for everyone).
 const MAX_FAILURES: usize = 10;
+/// Wrong tries from everywhere before pairing pauses for everyone (many addresses at once).
+const MAX_FAILURES_ALL: usize = 100;
 const WORKERS: usize = 4;
 
 /// The hub's clock: milliseconds since 1970 UTC.
@@ -242,7 +246,8 @@ struct State {
     books: Vec<Book>,
     registry: Registry,
     codes: HashMap<String, Pairing>,
-    failures: VecDeque<i64>,
+    /// Wrong pairing tries in the last [`FAILURE_WINDOW_MS`], with the address they came from.
+    failures: VecDeque<(i64, std::net::IpAddr)>,
 }
 
 struct Shared {
@@ -709,6 +714,15 @@ fn add_record(
     Ok((rec, fresh))
 }
 
+/// A device sees an agreement's statements and exports only when its member is in it (the
+/// history itself goes to every device, which checks it whole; review L11).
+fn in_agreement(l: &Ledger, me: MemberId, a: u32) -> Result<(), String> {
+    match l.agreements.get(&sk_core::AgreementId(a)) {
+        Some(g) if g.members.contains_key(&me) => Ok(()),
+        _ => Err("No such period.".into()),
+    }
+}
+
 /// Where the hub keeps a book's attached files.
 fn files_dir(shared: &Shared, book_id: &str) -> PathBuf {
     shared.data.join(FILES_DIR).join(book_id)
@@ -893,7 +907,14 @@ fn handle_device(shared: &Shared, mut req: Request) {
         ("POST", "/api/v1/pair") => {
             let r: Result<PairRequest, String> = read_json(&mut req);
             match r {
-                Ok(p) => match pair(shared, &p) {
+                Ok(p) => match pair(
+                    shared,
+                    &p,
+                    remote_port
+                        .and_then(|port| wifi::peer_ip(&shared.peers, port))
+                        .or_else(|| req.remote_addr().map(|a| a.ip()))
+                        .unwrap_or(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+                ) {
                     Ok(a) => send(shared, req, 200, &json!(a)),
                     Err((s, m)) => fail(shared, req, s, &m),
                 },
@@ -1182,6 +1203,18 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
             if !sk_ledger::is_sha256_hex(sha) {
                 return fail(shared, req, 404, "No such file.");
             }
+            // only a file on an expense of one of this member's agreements
+            let mine = device_view(shared, d, |l, _, _| {
+                l.entries.values().any(|e| {
+                    e.attachments.iter().any(|f| f.sha256 == sha)
+                        && l.agreements
+                            .get(&e.agreement)
+                            .is_some_and(|g| g.members.contains_key(&me))
+                })
+            });
+            if !matches!(mine, Ok(true)) {
+                return fail(shared, req, 404, "No such file.");
+            }
             let Ok(bytes) = std::fs::read(files_dir(shared, &d.book_id).join(sha)) else {
                 return fail(shared, req, 404, "The hub doesn't have that file.");
             };
@@ -1239,6 +1272,7 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
                 Err(_) => (None, String::new()),
             };
             let made = device_view(shared, d, |l, cur, _| {
+                in_agreement(l, me, a)?;
                 sk_view::view::period_sheet(l, sk_core::AgreementId(a), first, head).and_then(
                     |sheet| sk_report::period_pdf(&sheet, &book, cur).map(|pdf| (sheet.stem, pdf)),
                 )
@@ -1281,6 +1315,7 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
                 .filter(|s| s.info().hyperbook)
                 .and_then(|s| s.head());
             match device_view(shared, d, |l, _, _| {
+                in_agreement(l, me, a)?;
                 sk_view::view::csv(l, sk_core::AgreementId(a), first, head)
             }) {
                 Ok(Ok((file, text))) => {
@@ -1301,6 +1336,12 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
             };
             let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit() || b == b'-');
             if !ok(a) || !ok(first) {
+                return fail(shared, req, 404, "No such statement.");
+            }
+            let mine = device_view(shared, d, |l, _, _| {
+                in_agreement(l, me, a.parse().unwrap_or(0)).is_ok()
+            });
+            if !matches!(mine, Ok(true)) {
                 return fail(shared, req, 404, "No such statement.");
             }
             {
@@ -1340,7 +1381,11 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
     }
 }
 
-fn pair(shared: &Shared, p: &PairRequest) -> Result<PairAnswer, (u16, String)> {
+fn pair(
+    shared: &Shared,
+    p: &PairRequest,
+    ip: std::net::IpAddr,
+) -> Result<PairAnswer, (u16, String)> {
     let wrong = || {
         (
             403,
@@ -1368,11 +1413,12 @@ fn pair(shared: &Shared, p: &PairRequest) -> Result<PairAnswer, (u16, String)> {
         while st
             .failures
             .front()
-            .is_some_and(|t| now - *t > FAILURE_WINDOW_MS)
+            .is_some_and(|(t, _)| now - *t > FAILURE_WINDOW_MS)
         {
             st.failures.pop_front();
         }
-        if st.failures.len() >= MAX_FAILURES {
+        let mine = st.failures.iter().filter(|(_, a)| *a == ip).count();
+        if mine >= MAX_FAILURES || st.failures.len() >= MAX_FAILURES_ALL {
             return Err((
                 429,
                 "Too many wrong tries: pairing is paused for 10 minutes.".into(),
@@ -1386,7 +1432,7 @@ fn pair(shared: &Shared, p: &PairRequest) -> Result<PairAnswer, (u16, String)> {
             ));
         };
         if !valid {
-            st.failures.push_back(now);
+            st.failures.push_back((now, ip));
             return Err(wrong());
         }
         pin_hash
@@ -1395,7 +1441,7 @@ fn pair(shared: &Shared, p: &PairRequest) -> Result<PairAnswer, (u16, String)> {
     let pin_ok = pin::verify(p.pin.trim(), &pin_hash);
     let mut st = shared.lock();
     if !pin_ok {
-        st.failures.push_back(now);
+        st.failures.push_back((now, ip));
         let burn = match st.codes.get_mut(&code) {
             Some(c) => {
                 c.tries += 1;

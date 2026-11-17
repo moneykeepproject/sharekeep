@@ -100,3 +100,15 @@ without a password, base64) is set, and warns that the setup is unsigned otherwi
 ShareKeep is in the launcher's catalog (`keep-launcher`, `crates/core/src/catalog.rs`): asset
 stem `sharekeep`, Windows `-setup.exe`, the DMG once the apps have a Developer ID (until then the
 launcher opens a copy in Applications and links to the releases, as for the other apps).
+
+## Known limits (review L14)
+
+- The firewall rule covers private and domain networks only, never public ones (a hub must
+  not answer on a café's Wi-Fi). Windows marks a new network public: Help and questions tells
+  the household to make the home network private.
+- The installing account may read `admin.token`; on a PC where the everyday account isn't the
+  one that ran the setup (a separate administrator account), the everyday account gets no Hub
+  tab. Run the setup from the account that will use the hub computer.
+- The hub option needs ShareKeep in Program Files: the service runs the hub program from the
+  install folder, and only Program Files is locked against ordinary programs.
+

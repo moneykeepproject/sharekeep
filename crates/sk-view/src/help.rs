@@ -36,6 +36,7 @@ pub const FAQ: &[Faq] = &[
         question: "It says the household hub can't be reached",
         answer: &[
             "The phone has to be on the home Wi-Fi (not mobile data), and the hub computer has to be on and awake.",
+            "On a Windows hub computer, the home network must be a private network: Settings, then Network & internet, then Wi-Fi (or Ethernet), then the network's properties, then Private network. Windows marks a new network public, and then it lets no phone reach the hub.",
             "Expenses, payments and approvals entered meanwhile wait on the phone and are sent when it reaches the hub. Settings, then Sync now, sends them at once.",
         ],
     },

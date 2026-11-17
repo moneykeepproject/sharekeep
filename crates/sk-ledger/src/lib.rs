@@ -95,6 +95,9 @@ pub struct Entry {
     pub deleted: bool,
     /// The record that last edited it.
     pub edited_by: Option<u64>,
+    /// Who made that edit (the screens say so; review L10).
+    #[serde(default)]
+    pub editor: Option<MemberId>,
     /// Pictures and PDFs attached to it, oldest first.
     #[serde(default)]
     pub attachments: Vec<FileRef>,
@@ -904,6 +907,7 @@ impl Ledger {
                         disputed: false,
                         deleted: false,
                         edited_by: None,
+                        editor: None,
                         attachments: Vec::new(),
                         counted_at_close: None,
                     },
@@ -925,6 +929,7 @@ impl Ledger {
                 let mut entry = self.post_expense(old.seq, author, b.expense, Some(&old))?;
                 self.fulfil_entry(&entry, true);
                 entry.edited_by = Some(r.seq);
+                entry.editor = author;
                 entry.author = old.author;
                 entry.disputed = old.disputed;
                 entry.attachments = old.attachments.clone();
@@ -1288,6 +1293,7 @@ impl Ledger {
             disputed: false,
             deleted: false,
             edited_by: None,
+            editor: None,
             attachments: Vec::new(),
             counted_at_close: None,
         })
