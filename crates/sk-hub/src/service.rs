@@ -214,7 +214,11 @@ fn xml(s: &str) -> String {
 
 /// macOS: the launchd daemon's property list. It runs as `user` and restarts if it stops.
 pub fn macos_plist(exe: &Path, data: &Path, user: &str) -> String {
-    let log = data.join(LOG_FILE);
+    // a Mac path whatever system writes it (the tests also run on Windows)
+    let log = format!(
+        "{}/{LOG_FILE}",
+        data.display().to_string().trim_end_matches('/')
+    );
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -240,7 +244,7 @@ pub fn macos_plist(exe: &Path, data: &Path, user: &str) -> String {
         label = LAUNCHD_LABEL,
         exe = xml(&exe.display().to_string()),
         data = xml(&data.display().to_string()),
-        log = xml(&log.display().to_string()),
+        log = xml(&log),
         user = xml(user),
     )
 }
@@ -396,7 +400,9 @@ mod tests {
         let script = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer/macos/install-hub.command"),
         )
-        .unwrap();
+        .unwrap()
+        // a checkout made before .gitattributes covered .command files may have CRLF
+        .replace("\r\n", "\n");
         let body = script
             .split_once("<<PLIST\n")
             .unwrap()
