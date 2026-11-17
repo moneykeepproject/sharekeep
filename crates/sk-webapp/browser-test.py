@@ -243,6 +243,13 @@ try:
             'body': {'proposal': waiting[0]['seq'], 'approve': True}}, jerry)
         pg.click('#sync')
         pg.wait_for_selector('#page >> text=$350.00')
+        # a mistake is undone by a correction, recorded beside it in the deposit's history
+        row = pg.locator('#page .row:has(p:has-text("Kept back")) button:has-text("Undo")').first
+        row.click()
+        row.click()
+        pg.wait_for_selector('#page >> text=$400.00')
+        pg.wait_for_selector('#page p:has-text("Correction of record")')
+        pg.screenshot(path=f'{out}/13b-deposit-correction.png', full_page=True)
         # a bill divided by days present asks for each person's days
         pg.click('#tabs >> text=Activity')
         pg.click('text=+ Expense')

@@ -550,11 +550,16 @@ function agreementPage(a) {
       h('div', { class: 'card' }, h('h2', {}, 'To settle up'),
         a.settle.length ? a.settle.map((s) => h('div', {}, s)) : h('p', { class: 'hint' }, 'Everyone is settled up.')),
       h('div', { class: 'card' }, h('h2', {}, 'Deposits and pots'),
-        a.deposits.map((d) => h('div', { class: 'row' },
-          h('div', { class: 'grow' }, h('div', {}, d.label), h('p', { class: 'hint' }, d.kind + ' · ' + d.detail)),
-          h('strong', {}, d.balance),
-          h('button', { class: 'link', onclick: () => payInSheet(a, d) }, 'Put in'),
-          d.kind === 'Held' ? h('button', { class: 'link', onclick: () => depositMoveSheet(a, d) }, 'More') : null)),
+        a.deposits.map((d) => h('div', {},
+          h('div', { class: 'row' },
+            h('div', { class: 'grow' }, h('div', {}, d.label), h('p', { class: 'hint' }, d.kind + ' · ' + d.detail)),
+            h('strong', {}, d.balance),
+            h('button', { class: 'link', onclick: () => payInSheet(a, d) }, 'Put in'),
+            d.kind === 'Held' ? h('button', { class: 'link', onclick: () => depositMoveSheet(a, d) }, 'More') : null),
+          // its recent changes; a mistake is undone by a correction, recorded beside it
+          (d.history || []).map((ev) => h('div', { class: 'row' },
+            h('p', { class: 'hint grow' }, ev.text),
+            ev.can_correct ? h('button', { class: 'link amber', onclick: () => correctDeposit(a, d, ev) }, 'Undo') : null)))),
         a.deposits.length ? null : h('p', { class: 'hint' }, 'A security deposit, a utilities deposit, or a pot the household pays bills from.'),
         h('button', { class: 'btn secondary', onclick: () => depositSheet(a) }, '+ Deposit or pot')),
       h('div', { class: 'card' }, h('h2', {}, 'Moving in and out'),
@@ -1341,6 +1346,17 @@ function depositMoveSheet(a, dep) {
         }
       } }, 'Save'));
   });
+}
+
+/** Undo a mistaken change to a deposit with a correction (two taps). Someone else's part that
+ *  would shrink waits for their approval. */
+async function correctDeposit(a, d, ev) {
+  const key = 'correct-' + ev.seq;
+  if (S.armed !== key) { S.armed = key; toast('Tap Undo again to record a correction of: ' + ev.text); return; }
+  S.armed = null;
+  if (await sendNow('deposit', { op: 'correct', agreement: a.id, id: d.id, target: ev.seq })) {
+    toast('Correction recorded. If it takes back from someone else, it waits for their approval.');
+  }
 }
 
 function joinSheet(a) {

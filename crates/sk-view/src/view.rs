@@ -564,6 +564,29 @@ fn deposit_approval(
                 name(l, p.by)
             ),
         },
+        D::Correct {
+            agreement,
+            id,
+            target,
+        } => ApprovalRow {
+            seq: p.seq,
+            title: format!("Correction: {}", label(agreement, id)),
+            detail: {
+                let undoes = l
+                    .agreements
+                    .get(agreement)
+                    .and_then(|g| g.deposit_log.get(target))
+                    .map(|ev| {
+                        format!(
+                            "Undoes \"{}\" of {} (record {target})",
+                            ev.what,
+                            ev.date.format("%b %-d")
+                        )
+                    })
+                    .unwrap_or_else(|| format!("Undoes record {target}"));
+                format!("{undoes}, proposed by {}", name(l, p.by))
+            },
+        },
         _ => ApprovalRow {
             seq: p.seq,
             title: "A change to a deposit".into(),
@@ -1075,6 +1098,63 @@ pub struct DepositRow {
     pub balance: String,
     /// "Your part: $500.00"
     pub detail: String,
+    /// Its recent changes, newest first.
+    pub history: Vec<DepositEventRow>,
+}
+
+/// One change to a deposit, for its history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DepositEventRow {
+    pub seq: u64,
+    /// "Nov 3 · Put in · Sam +$1,500.00"
+    pub text: String,
+    /// It can be undone by a correction (not set-up, not a correction, not undone already).
+    pub can_correct: bool,
+}
+
+/// How many recent changes a deposit's history shows.
+const DEPOSIT_HISTORY: usize = 8;
+
+fn deposit_history(
+    l: &Ledger,
+    g: &sk_ledger::Agreement,
+    id: sk_core::DepositId,
+    cur: Currency,
+) -> Vec<DepositEventRow> {
+    g.deposit_log
+        .iter()
+        .rev()
+        .filter(|(_, ev)| ev.deposit == id)
+        .take(DEPOSIT_HISTORY)
+        .map(|(seq, ev)| {
+            let parts = ev
+                .stakes
+                .iter()
+                .map(|(m, v)| {
+                    let sign = if *v > 0 { "+" } else { "" };
+                    format!("{} {sign}{}", name(l, *m), money(cur, *v))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut text = format!("{} · {}", ev.date.format("%b %-d"), ev.what);
+            if let Some(t) = ev.correction_of {
+                text.push_str(&format!(" of record {t}"));
+            }
+            if !parts.is_empty() {
+                text.push_str(&format!(" · {parts}"));
+            }
+            if ev.corrected_by.is_some() {
+                text.push_str(" · undone");
+            }
+            DepositEventRow {
+                seq: *seq,
+                text,
+                can_correct: ev.correction_of.is_none()
+                    && ev.corrected_by.is_none()
+                    && ev.what != "Set up",
+            }
+        })
+        .collect()
 }
 
 /// A recurring item.
@@ -1152,6 +1232,7 @@ pub fn deposits(l: &Ledger, a: AgreementId, me: MemberId, cur: Currency) -> Vec<
                         "Your part: {}",
                         money(cur, st.stakes().get(&me).copied().unwrap_or(0))
                     ),
+                    history: deposit_history(l, g, d.id, cur),
                 })
                 .collect()
         })

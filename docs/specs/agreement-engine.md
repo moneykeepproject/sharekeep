@@ -152,3 +152,15 @@ count the same days). The hub sets it to its computer's zone when a book is made
 change once anything is recorded. Books made before it count days in UTC. The web app's and
 desktop's "today" (default dates, what is due, whether a period has ended) is the book's day.
 
+## Correcting a deposit mistake
+
+Deposit records aren't entries, so they can't be edited or deleted. A mistake (a pay-in,
+buy-out, deduction or refund) is undone by a **correction**: a new `deposit` record
+`{"op": "correct", "agreement", "id", "target": <record>}` that takes back exactly what the
+target did to the deposit's money and to each member's part. The history keeps both; the
+deposit's history shows the target "undone" and the correction beside it. A correction is
+refused when the money has gone since (spent or paid back) or, for a held deposit, when
+someone's part is now smaller than what would be taken back; a set-up, a correction, or a
+change already corrected isn't corrected. When it takes back from someone other than the
+person asking, it is a proposal they approve (as a buy-out is). An undone top-up is due again.
+

@@ -975,3 +975,96 @@ fn coming_back_keeps_the_first_stay() {
     assert!(!ag.active_on(d(15)).contains(&MemberId(ALEX)));
     assert!(ag.active_on(d(25)).contains(&MemberId(ALEX)));
 }
+
+#[test]
+fn a_deposit_mistake_is_undone_by_a_correction() {
+    let mut b = household();
+    approved_rule(&mut b, equal_rule(1, "Shared", "2027-01-01", &[]));
+    b.add(
+        day(1, 2),
+        Some(JERRY),
+        "deposit",
+        json!({
+            "op": "create", "agreement": 1, "id": 1, "kind": "Held", "label": "Security deposit",
+            "holder": "Landlord", "refundable": "Yes",
+        }),
+    );
+    let stake = |b: &Book, m: u32| {
+        let (_, st) = &b.ledger.agreements[&A].deposits[&sk_core::DepositId(1)];
+        (st.balance(), st.stake(MemberId(m)))
+    };
+    // Sam's pay-in typed with an extra zero
+    let wrong = b.add(
+        day(1, 3),
+        Some(SAM),
+        "deposit",
+        json!({"op": "pay-in", "agreement": 1, "id": 1, "member": SAM, "amount": 1500000}),
+    );
+    assert_eq!(stake(&b, SAM), (1500000, 1500000));
+    // Sam undoes it: a new record, the history keeps both
+    let fix = b.add(
+        day(1, 3),
+        Some(SAM),
+        "deposit",
+        json!({"op": "correct", "agreement": 1, "id": 1, "target": wrong}),
+    );
+    assert_eq!(stake(&b, SAM), (0, 0));
+    let log = &b.ledger.agreements[&A].deposit_log;
+    assert_eq!(log[&wrong].corrected_by, Some(fix));
+    assert_eq!(log[&fix].correction_of, Some(wrong));
+    assert!(b
+        .try_add(
+            day(1, 3),
+            Some(SAM),
+            "deposit",
+            json!({"op": "correct", "agreement": 1, "id": 1, "target": wrong})
+        )
+        .unwrap_err()
+        .contains("already corrected"));
+    assert!(b
+        .try_add(
+            day(1, 3),
+            Some(SAM),
+            "deposit",
+            json!({"op": "correct", "agreement": 1, "id": 1, "target": fix})
+        )
+        .is_err());
+    // the right amount; undoing someone else's pay-in waits for them
+    let right = b.add(
+        day(1, 4),
+        Some(SAM),
+        "deposit",
+        json!({"op": "pay-in", "agreement": 1, "id": 1, "member": SAM, "amount": 150000}),
+    );
+    let p = b.add(
+        day(1, 5),
+        Some(JERRY),
+        "deposit",
+        json!({"op": "correct", "agreement": 1, "id": 1, "target": right}),
+    );
+    assert_eq!(b.ledger.proposals[&p].status, ProposalStatus::Waiting);
+    assert_eq!(stake(&b, SAM), (150000, 150000));
+    b.add(
+        day(1, 6),
+        Some(SAM),
+        "approval",
+        json!({"proposal": p, "approve": false}),
+    );
+    assert_eq!(stake(&b, SAM), (150000, 150000));
+    // money that has gone can't be taken back this way
+    b.add(
+        day(1, 7),
+        Some(SAM),
+        "deposit",
+        json!({"op": "refund", "agreement": 1, "id": 1, "amount": 150000}),
+    );
+    assert!(b
+        .try_add(
+            day(1, 8),
+            Some(SAM),
+            "deposit",
+            json!({"op": "correct", "agreement": 1, "id": 1, "target": right})
+        )
+        .unwrap_err()
+        .contains("doesn't hold that money"));
+}

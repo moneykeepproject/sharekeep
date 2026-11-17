@@ -202,6 +202,11 @@ fn wire(ui: &AppWindow) {
     on!(on_dispute_entry, |st, _u, seq: i32| st.dispute_entry(seq));
     on!(on_attach_file, |st, u, seq: i32| st.attach_file(u, seq));
     on!(
+        on_correct_deposit,
+        |st, u, row: i32, seq: i32, text: slint::SharedString| st
+            .correct_deposit(u, row, seq, &text)
+    );
+    on!(
         on_open_file,
         |st, _u, sha: slint::SharedString, name: slint::SharedString| st.open_file(&sha, &name)
     );

@@ -1063,6 +1063,16 @@ impl State {
                         kind: s(d.kind),
                         balance: s(d.balance),
                         detail: s(d.detail),
+                        history: model(
+                            d.history
+                                .iter()
+                                .map(|ev| DepositEventS {
+                                    seq: ev.seq as i32,
+                                    text: s(&ev.text),
+                                    can_correct: ev.can_correct,
+                                })
+                                .collect(),
+                        ),
                     })
                     .collect(),
             ));
@@ -1770,6 +1780,33 @@ impl State {
         self.send(Job::OpenFile {
             sha256: sha.into(),
             name: name.into(),
+        });
+    }
+
+    /// Undo a mistaken change to a deposit: the first click asks, the second records the
+    /// correction (it waits for approval when it takes back from someone else).
+    pub fn correct_deposit(&mut self, ui: &AppWindow, row: i32, seq: i32, text: &str) {
+        let Some(a) = self.agreement else {
+            return;
+        };
+        let Some(d) = view::deposits(&self.ledger, a, self.me(), self.cur)
+            .into_iter()
+            .nth(row as usize)
+        else {
+            return;
+        };
+        let key = (seq, format!("deposit-{}", d.id.0));
+        if self.armed_detach.as_ref() != Some(&key) {
+            self.armed_detach = Some(key);
+            return toast(
+                ui,
+                &format!("Click Undo again to record a correction of: {text}"),
+            );
+        }
+        self.armed_detach = None;
+        self.send(Job::Send {
+            kind: "deposit".into(),
+            body: json!({"op": "correct", "agreement": a.0, "id": d.id.0, "target": seq}),
         });
     }
 

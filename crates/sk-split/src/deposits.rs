@@ -101,6 +101,39 @@ impl DepositState {
         Ok(())
     }
 
+    /// Undo an earlier change exactly: take `balance` back off the deposit and each
+    /// member's `stakes` change off their part. Refused when the money has gone meanwhile, or
+    /// (for a held deposit) when someone's part is now smaller than what is taken back.
+    pub fn reverse(
+        &mut self,
+        kind: DepositKind,
+        balance: Cents,
+        stakes: &Shares,
+    ) -> Result<(), SplitError> {
+        let mut next = self.clone();
+        next.balance = next
+            .balance
+            .checked_sub(balance)
+            .ok_or(SplitError::Overflow)?;
+        if next.balance < 0 {
+            return Err(SplitError::InsufficientFunds {
+                balance: self.balance,
+                needed: balance,
+            });
+        }
+        for (m, v) in stakes {
+            next.change(*m, -*v)?;
+            if kind == DepositKind::Held && next.stake(*m) < 0 {
+                return Err(SplitError::StakeTooSmall {
+                    member: *m,
+                    stake: self.stake(*m),
+                });
+            }
+        }
+        *self = next;
+        Ok(())
+    }
+
     /// A member pays in (a move-in deposit, a contribution, a top-up).
     pub fn pay_in(&mut self, m: MemberId, amount: Cents) -> Result<(), SplitError> {
         if amount <= 0 {

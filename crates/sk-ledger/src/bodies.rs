@@ -246,6 +246,14 @@ pub enum DepositBody {
         id: DepositId,
         amount: Cents,
     },
+    /// Undo a mistaken deposit record (a pay-in, buy-out, deduction or refund) exactly: a new
+    /// record, so the history keeps both.
+    Correct {
+        agreement: AgreementId,
+        id: DepositId,
+        /// The record being undone.
+        target: u64,
+    },
 }
 
 impl DepositBody {
@@ -255,7 +263,31 @@ impl DepositBody {
             | DepositBody::PayIn { agreement, .. }
             | DepositBody::BuyOut { agreement, .. }
             | DepositBody::Deduct { agreement, .. }
-            | DepositBody::Refund { agreement, .. } => *agreement,
+            | DepositBody::Refund { agreement, .. }
+            | DepositBody::Correct { agreement, .. } => *agreement,
+        }
+    }
+
+    pub fn deposit_id(&self) -> DepositId {
+        match self {
+            DepositBody::Create { id, .. }
+            | DepositBody::PayIn { id, .. }
+            | DepositBody::BuyOut { id, .. }
+            | DepositBody::Deduct { id, .. }
+            | DepositBody::Refund { id, .. }
+            | DepositBody::Correct { id, .. } => *id,
+        }
+    }
+
+    /// What it was, in a word or two.
+    pub fn label(&self) -> &'static str {
+        match self {
+            DepositBody::Create { .. } => "Set up",
+            DepositBody::PayIn { .. } => "Put in",
+            DepositBody::BuyOut { .. } => "Bought out",
+            DepositBody::Deduct { .. } => "Kept back",
+            DepositBody::Refund { .. } => "Paid back",
+            DepositBody::Correct { .. } => "Correction",
         }
     }
 }

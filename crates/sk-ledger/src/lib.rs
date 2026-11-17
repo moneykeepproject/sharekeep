@@ -264,6 +264,29 @@ pub struct Agreement {
     /// Earlier stays of members who left and came back.
     #[serde(default)]
     pub past_stays: BTreeMap<MemberId, Vec<Membership>>,
+    /// What each deposit record did, by its record number: shown in the deposit's history,
+    /// and undone exactly by a correction.
+    #[serde(default)]
+    pub deposit_log: BTreeMap<u64, DepositEvent>,
+}
+
+/// One change to a deposit, as it was applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepositEvent {
+    pub deposit: DepositId,
+    pub date: NaiveDate,
+    pub by: Option<MemberId>,
+    pub what: String,
+    /// The change to the money in the deposit, and to each member's part.
+    pub balance: Cents,
+    pub stakes: BTreeMap<MemberId, Cents>,
+    /// The correction that undid it.
+    pub corrected_by: Option<u64>,
+    /// For a correction: the record it undid.
+    pub correction_of: Option<u64>,
+    /// A scheduled top-up it paid (due again once it is undone).
+    #[serde(default)]
+    pub paid_due: Option<(u32, NaiveDate, Option<MemberId>)>,
 }
 
 /// A recurring bill or top-up.
@@ -362,6 +385,9 @@ pub struct Ledger {
     /// The book's time zone (IANA name): its days are counted there. None: UTC.
     #[serde(default)]
     pub time_zone: Option<String>,
+    /// The day of the record being applied.
+    #[serde(skip)]
+    current_day: NaiveDate,
 }
 
 /// A `restore` record: the hub carried on from a backup.
@@ -516,6 +542,7 @@ impl Ledger {
     fn apply_inner(&mut self, r: &Record) -> Result<Effects, Reject> {
         let author = r.author.member;
         let today = self.day(r.ts);
+        self.current_day = today;
         let mut effects = Effects::default();
         match r.kind.as_str() {
             sk_chain::GENESIS => {}
@@ -640,6 +667,7 @@ impl Ledger {
                         recurring: BTreeMap::new(),
                         fulfilled: BTreeSet::new(),
                         past_stays: BTreeMap::new(),
+                        deposit_log: BTreeMap::new(),
                     },
                 );
             }
@@ -1096,7 +1124,7 @@ impl Ledger {
                     s.left = Some(b.date);
                 }
             }
-            ProposalKind::Deposit(b) => self.apply_deposit(b.clone())?,
+            ProposalKind::Deposit(b) => self.apply_deposit(seq, Some(p.by), b.clone())?,
         }
         if let Some(p) = self.proposals.get_mut(&seq) {
             p.status = ProposalStatus::Approved;
@@ -1312,6 +1340,19 @@ impl Ledger {
         // giving up part of their stake approves, a deduction everyone (or the keeper) does
         let approvers = match (&b, author) {
             (DepositBody::BuyOut { from, .. }, Some(by)) if *from != by => [*from].into(),
+            // undoing takes back from whoever gained: they approve (unless it's them)
+            (DepositBody::Correct { target, .. }, Some(by)) => self
+                .agreements
+                .get(&agreement)
+                .and_then(|g| g.deposit_log.get(target))
+                .map(|ev| {
+                    ev.stakes
+                        .iter()
+                        .filter(|(m, v)| **v > 0 && **m != by)
+                        .map(|(m, _)| *m)
+                        .collect()
+                })
+                .unwrap_or_default(),
             (DepositBody::Deduct { shares, .. }, Some(by)) => {
                 if shares.values().any(|s| *s < 0) {
                     return Err(no("A deduction takes from the pot: no negative parts."));
@@ -1321,15 +1362,82 @@ impl Ledger {
             _ => BTreeSet::new(),
         };
         if approvers.is_empty() {
-            return self.apply_deposit(b);
+            return self.apply_deposit(seq, author, b);
         }
         // it must work today; it is checked again when the last approval comes
-        self.clone().apply_deposit(b.clone())?;
+        self.clone().apply_deposit(seq, author, b.clone())?;
         let by = author.expect("approvers only for a member's request");
         self.propose(seq, by, ProposalKind::Deposit(b), approvers)
     }
 
-    fn apply_deposit(&mut self, b: DepositBody) -> Result<(), Reject> {
+    /// Apply a deposit record (`seq`) and note what it did in the agreement's deposit log.
+    fn apply_deposit(
+        &mut self,
+        seq: u64,
+        by: Option<MemberId>,
+        b: DepositBody,
+    ) -> Result<(), Reject> {
+        let agreement = b.agreement();
+        let id = b.deposit_id();
+        let what = b.label().to_string();
+        let date = self.current_day;
+        let correction_of = match &b {
+            DepositBody::Correct { target, .. } => Some(*target),
+            _ => None,
+        };
+        let paid_due = match &b {
+            DepositBody::PayIn {
+                due: Some(d),
+                member,
+                ..
+            } => Some((d.recurring, d.date, Some(*member))),
+            _ => None,
+        };
+        let before = self
+            .agreements
+            .get(&agreement)
+            .and_then(|g| g.deposits.get(&id))
+            .map(|(_, st)| st.clone());
+        self.change_deposit(b)?;
+        let ag = self.agreement(agreement)?;
+        let Some((_, after)) = ag.deposits.get(&id) else {
+            return Ok(());
+        };
+        let before = before.unwrap_or_default();
+        let mut stakes = BTreeMap::new();
+        for m in before.stakes().keys().chain(after.stakes().keys()) {
+            let d = after.stake(*m) - before.stake(*m);
+            if d != 0 {
+                stakes.insert(*m, d);
+            }
+        }
+        let balance = after.balance() - before.balance();
+        if let Some(t) = correction_of {
+            if let Some(ev) = ag.deposit_log.get_mut(&t) {
+                ev.corrected_by = Some(seq);
+                if let Some(due) = ev.paid_due {
+                    ag.fulfilled.remove(&due);
+                }
+            }
+        }
+        ag.deposit_log.insert(
+            seq,
+            DepositEvent {
+                deposit: id,
+                date,
+                by,
+                what,
+                balance,
+                stakes,
+                corrected_by: None,
+                correction_of,
+                paid_due,
+            },
+        );
+        Ok(())
+    }
+
+    fn change_deposit(&mut self, b: DepositBody) -> Result<(), Reject> {
         let agreement = b.agreement();
         let ag = self.agreement(agreement)?;
         let member_ok = |ag: &Agreement, m: &MemberId| -> Result<(), Reject> {
@@ -1431,6 +1539,41 @@ impl Ledger {
                     .ok_or_else(|| no("There's no such deposit."))?;
                 let dep = dep.clone();
                 st.refund(&dep, amount)?;
+            }
+            DepositBody::Correct { id, target, .. } => {
+                let ev = ag
+                    .deposit_log
+                    .get(&target)
+                    .ok_or_else(|| no("There's no such change to a deposit."))?
+                    .clone();
+                if ev.deposit != id {
+                    return Err(no("That change was to another deposit."));
+                }
+                if ev.correction_of.is_some() {
+                    return Err(no(
+                        "A correction isn't corrected: record the change again instead.",
+                    ));
+                }
+                if ev.corrected_by.is_some() {
+                    return Err(no("That change was already corrected."));
+                }
+                if ev.what == "Set up" {
+                    return Err(no("Setting up a deposit isn't undone."));
+                }
+                let (dep, st) = ag
+                    .deposits
+                    .get_mut(&id)
+                    .ok_or_else(|| no("There's no such deposit."))?;
+                let kind = dep.kind;
+                st.reverse(kind, ev.balance, &ev.stakes).map_err(|e| match e {
+                    sk_split::SplitError::InsufficientFunds { .. } => {
+                        no("The deposit doesn't hold that money any more (it was spent or paid back since): it can't be undone this way.")
+                    }
+                    sk_split::SplitError::StakeTooSmall { .. } => {
+                        no("Someone's part is smaller now than what would be taken back (it moved since): it can't be undone this way.")
+                    }
+                    other => Reject::from(other),
+                })?;
             }
         }
         Ok(())

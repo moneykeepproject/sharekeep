@@ -19,7 +19,8 @@ export struct WeightS { name: string, value: float, included: bool, locked: bool
 export struct ChoiceS { id: int, label: string, on: bool }
 export struct DeviceS { id: int, name: string, detail: string, revoked: bool }
 export struct DueS { name: string, date: string, detail: string, bill: bool, mine: bool, overdue: bool }
-export struct DepositS { label: string, kind: string, balance: string, detail: string }
+export struct DepositEventS { seq: int, text: string, can-correct: bool }
+export struct DepositS { label: string, kind: string, balance: string, detail: string, history: [DepositEventS] }
 export struct RecurringS { id: int, name: string, detail: string, stopped: bool }
 export struct NeedS { name: string, value: string }
 export struct EventS { name: string, detail: string }
@@ -461,6 +462,8 @@ export component AppWindow inherits Window {
     callback dispute-entry(int);
     // pictures and PDFs on an expense
     callback attach-file(int);
+    // undo a mistaken change to a deposit: (deposit row, record, its text)
+    callback correct-deposit(int, int, string);
     callback open-file(string, string);
     callback detach-file(int, string, string);
     callback dismiss-refused();
@@ -799,6 +802,11 @@ export component AppWindow inherits Window {
                                     Hint { text: d.kind + " · " + d.detail; }
                                 }
                                 Text { text: d.balance; font-weight: 700; color: Theme.ink; vertical-alignment: center; }
+                            }
+                            // its recent changes; a mistake is undone by a correction
+                            for ev in d.history: HorizontalLayout {
+                                Hint { text: ev.text; horizontal-stretch: 1; }
+                                if ev.can-correct: LinkButton { text: "Undo"; fg: Theme.amber; clicked => { root.correct-deposit(i, ev.seq, ev.text); } }
                             }
                             HorizontalLayout {
                                 alignment: end;
