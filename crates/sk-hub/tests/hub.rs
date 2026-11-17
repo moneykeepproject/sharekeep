@@ -195,6 +195,11 @@ fn pairing_code(h: &Hub, book: &str, member: u32) -> String {
     b["code"].as_str().unwrap().to_string()
 }
 
+/// A new book records the hub computer's time zone, when it has an IANA name.
+fn zone_record() -> usize {
+    usize::from(sk_ledger::local_zone().is_some())
+}
+
 fn status(e: &CallError) -> u16 {
     match e {
         CallError::Http { status, .. } => *status,
@@ -268,7 +273,7 @@ fn a_device_pairs_queues_offline_work_and_syncs_a_verified_history() {
     assert_eq!(status(&e), 422);
     assert!(e.to_string().contains("no such agreement"), "{e}");
 
-    assert_eq!(replica.sync(&sam, 100).unwrap(), 9);
+    assert_eq!(replica.sync(&sam, 100).unwrap(), 9 + zone_record());
     let (_, hub_records) = h.admin("GET", &format!("/admin/v1/books/{book}/records"), None);
     assert_eq!(
         replica.head().unwrap().hash.to_hex(),
@@ -282,7 +287,7 @@ fn a_device_pairs_queues_offline_work_and_syncs_a_verified_history() {
             .unwrap()
             .records()
             .len(),
-        9
+        9 + zone_record()
     );
 
     // removed devices are refused at once
@@ -397,7 +402,7 @@ fn pairings_survive_a_restart_and_a_locked_book_waits_for_its_password() {
     assert_eq!(s, 200, "{b}");
     assert_eq!(jerry.me().unwrap().member, 1);
     let (_, recs) = h.admin("GET", &format!("/admin/v1/books/{book}/records"), None);
-    assert_eq!(recs["records"].as_array().unwrap().len(), 7);
+    assert_eq!(recs["records"].as_array().unwrap().len(), 7 + zone_record());
 }
 
 #[test]

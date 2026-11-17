@@ -53,7 +53,7 @@ try:
     unverified.verify_mode = ssl.CERT_NONE
     def device(method, path, body, bearer=None):
         req = urllib.request.Request('https://127.0.0.1:15443' + path, method=method,
-            data=json.dumps(body).encode(),
+            data=json.dumps(body).encode() if body is not None else None,
             headers=dict({'Content-Type': 'application/json'}, **({'Authorization': 'Bearer ' + bearer} if bearer else {})))
         return json.load(urllib.request.urlopen(req, context=unverified))
     jerry_code = admin('POST', 'pairing', {'book_id': book, 'member': 1})['code']
@@ -235,6 +235,13 @@ try:
         pg.click('.sheet button.chip:has-text("Kept back")')
         pg.fill('.sheet label:has-text("Amount") input', '50.00')
         pg.click('.sheet button.btn:has-text("Save")')
+        # a deduction waits for approval (the keeper's, here): review M4
+        pg.wait_for_selector('text=Proposed. It takes effect once it is approved.')
+        waiting = [x for x in device('GET', '/api/v1/view', None, jerry)['approvals'] if x['title'].startswith('Deduction from')]
+        assert len(waiting) == 1, waiting
+        device('POST', '/api/v1/records', {'client_id': 'jd', 'kind': 'approval',
+            'body': {'proposal': waiting[0]['seq'], 'approve': True}}, jerry)
+        pg.click('#sync')
         pg.wait_for_selector('#page >> text=$350.00')
         # a bill divided by days present asks for each person's days
         pg.click('#tabs >> text=Activity')
@@ -259,7 +266,8 @@ try:
         pg.fill('.sheet label:has-text("Line 2") input', '15.00')
         pg.click('.sheet .line >> nth=1 >> button.chip:has-text("Sam")')
         pg.click('.sheet .line >> nth=1 >> button.chip:has-text("Alex")')
-        pg.wait_for_selector('.sheet .kv >> text=$13.33')
+        # Jerry's line plus a third of the tax; the odd cent goes where the split rule puts it
+        pg.wait_for_selector('.sheet .kv >> text=/\\$13\\.3[34]/')
         rows = pg.locator('.sheet .kv .v').all_inner_texts()
         print('itemized', rows)
         assert sum(round(float(r.strip('$')) * 100) for r in rows) == 3000, rows

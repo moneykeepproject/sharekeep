@@ -38,6 +38,9 @@ sk-hub = { path = "crates/sk-hub" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+# a book's days in its own time zone (review M6); the zone database is built in, so every
+# device works the same days out of the same timestamps
+jiff = { version = "1", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 # The same crates and versions as MoneyKeep (no new licences): hashing, SQLite, book
 # encryption, file locking.
 sha2 = "0.10"

@@ -350,6 +350,9 @@ pub struct Ledger {
     pub seals: Vec<Seal>,
     /// Backups the household restored after a broken Hyperbook, and who accepted each.
     pub restores: Vec<Restore>,
+    /// The book's time zone (IANA name): its days are counted there. None: UTC.
+    #[serde(default)]
+    pub time_zone: Option<String>,
 }
 
 /// A `restore` record: the hub carried on from a backup.
@@ -396,6 +399,31 @@ pub fn day_of(ts_ms: i64) -> NaiveDate {
     DateTime::from_timestamp_millis(ts_ms)
         .map(|d| d.date_naive())
         .unwrap_or_default()
+}
+
+/// The day of a timestamp in a time zone (an IANA name); UTC if the name is unknown.
+pub fn day_in(zone: &str, ts_ms: i64) -> NaiveDate {
+    let Ok(tz) = jiff::tz::db().get(zone) else {
+        return day_of(ts_ms);
+    };
+    jiff::Timestamp::from_millisecond(ts_ms)
+        .ok()
+        .map(|t| t.to_zoned_datetime(tz).date())
+        .and_then(|d| NaiveDate::from_ymd_opt(d.year().into(), d.month() as u32, d.day() as u32))
+        .unwrap_or_else(|| day_of(ts_ms))
+}
+
+/// Whether a time zone name is known (`America/New_York`).
+pub fn known_zone(zone: &str) -> bool {
+    jiff::tz::db().get(zone).is_ok()
+}
+
+/// This computer's time zone, if it has an IANA name.
+pub fn local_zone() -> Option<String> {
+    jiff::tz::TimeZone::system()
+        .iana_name()
+        .map(str::to_string)
+        .filter(|z| known_zone(z))
 }
 
 fn check_amount(a: Cents) -> Result<(), Reject> {
@@ -478,7 +506,7 @@ impl Ledger {
 
     fn apply_inner(&mut self, r: &Record) -> Result<Effects, Reject> {
         let author = r.author.member;
-        let today = day_of(r.ts);
+        let today = self.day(r.ts);
         let mut effects = Effects::default();
         match r.kind.as_str() {
             sk_chain::GENESIS => {}
@@ -530,6 +558,20 @@ impl Ledger {
                     }
                     "grace_days" => {
                         self.grace_days = s.value.as_u64().unwrap_or(7).min(60) as u16;
+                    }
+                    "time_zone" => {
+                        // chosen when the book is made: moving it later would move entries'
+                        // days and closed periods' edges
+                        if !self.entries.is_empty() || !self.proposals.is_empty() {
+                            return Err(no(
+                                "A book's time zone is chosen when it is made, before anything is recorded.",
+                            ));
+                        }
+                        let z = s.value.as_str().unwrap_or("");
+                        if !known_zone(z) {
+                            return Err(no(format!("\"{z}\" isn't a time zone.")));
+                        }
+                        self.time_zone = Some(z.to_string());
                     }
                     _ => {}
                 }
@@ -1358,6 +1400,14 @@ impl Ledger {
     /// them aside) and every close's adjustments.
     pub fn balances(&self, a: AgreementId) -> Balances {
         self.balances_until(a, None)
+    }
+
+    /// The book's day at a moment: in its time zone (UTC for an older book).
+    pub fn day(&self, ts_ms: i64) -> NaiveDate {
+        match &self.time_zone {
+            Some(z) => day_in(z, ts_ms),
+            None => day_of(ts_ms),
+        }
     }
 
     fn counts(&self, e: &Entry) -> bool {

@@ -914,9 +914,11 @@ fn device_view<T>(
     d: &Device,
     f: impl FnOnce(&Ledger, Currency, NaiveDate) -> T,
 ) -> Result<T, (u16, String)> {
-    let today = sk_ledger::day_of(shared.now());
+    let now = shared.now();
     let mut st = shared.lock();
     let book = open_book(&mut st, &d.book_id).map_err(|(s, m)| (s, m.to_string()))?;
+    // the book's day, in its time zone (review M6)
+    let today = book.ledger.day(now);
     let cur = book
         .info()
         .map(|i| i.currency)
@@ -1843,7 +1845,25 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
                         "book": facts(c.store.info()),
                         "recovery_key": c.recovery_key,
                     });
-                    let book = Book::open(file.clone(), c.path, c.store, &shared.log);
+                    let mut book = Book::open(file.clone(), c.path, c.store, &shared.log);
+                    // its days are the hub computer's days (review M6)
+                    if let (Some(zone), Some(store)) =
+                        (sk_ledger::local_zone(), book.store.as_mut())
+                    {
+                        match store.set_setting(
+                            shared.now(),
+                            Author::hub(),
+                            "time_zone",
+                            json!(zone),
+                        ) {
+                            Ok(rec) => {
+                                let _ = book.ledger.apply(&rec);
+                            }
+                            Err(e) => {
+                                (shared.log)(&format!("the book's time zone wasn't set ({e})"))
+                            }
+                        }
+                    }
                     let mut st = shared.lock();
                     st.books.push(book);
                     let saved = st.registry.set(CURRENT_BOOK, &file);

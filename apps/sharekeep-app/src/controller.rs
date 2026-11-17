@@ -937,6 +937,14 @@ impl State {
     // ----- filling the screens ---------------------------------------------------------------
 
     pub fn refresh(&mut self, ui: &AppWindow) {
+        // a book with a time zone counts its days there, wherever this computer is (review M6)
+        if self.ledger.time_zone.is_some() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            self.today = self.ledger.day(now);
+        }
         let l = &self.ledger;
         let me = self.me();
         let cur = self.cur;

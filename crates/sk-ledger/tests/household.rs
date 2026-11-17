@@ -797,3 +797,85 @@ fn a_members_stake_moves_only_with_their_say() {
     assert_eq!(b.ledger.proposals[&d].status, ProposalStatus::Waiting);
     assert_eq!(stake(&b, SAM), 299000);
 }
+
+#[test]
+fn a_books_days_are_counted_in_its_time_zone() {
+    let mut b = Book::new();
+    b.add(
+        day(1, 1),
+        None,
+        "setting",
+        json!({"key": "time_zone", "value": "America/New_York"}),
+    );
+    assert!(b
+        .try_add(
+            day(1, 1),
+            None,
+            "setting",
+            json!({"key": "time_zone", "value": "Mars/Olympus"})
+        )
+        .is_err());
+    for (id, name) in [(JERRY, "Jerry"), (SAM, "Sam")] {
+        b.add(
+            day(1, 1),
+            None,
+            "member-add",
+            json!({"id": id, "name": name}),
+        );
+    }
+    b.add(
+        day(1, 1),
+        None,
+        "agreement-add",
+        json!({
+            "id": 1, "name": "Home", "members": {"1": "2027-01-01", "2": "2027-01-01"},
+            "schedule": {"Monthly": {"start": "2027-01-01", "day": {"Day": 1}, "every": 1}},
+        }),
+    );
+    let p = b.add(
+        day(1, 1),
+        Some(JERRY),
+        "rule-proposal",
+        json!({"agreement": 1, "rule_id": 1, "effective": "2027-01-01",
+        "rule": {"name": "Shared", "method": "Equal", "members": [JERRY, SAM]}}),
+    );
+    b.add(
+        day(1, 1),
+        Some(SAM),
+        "approval",
+        json!({"proposal": p, "approve": true}),
+    );
+    // 7:30 pm on January 31 in New York is already February 1 in UTC
+    let evening = chrono::NaiveDate::from_ymd_opt(2027, 2, 1)
+        .unwrap()
+        .and_hms_opt(0, 30, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis();
+    assert_eq!(b.ledger.day(evening).to_string(), "2027-01-31");
+    // January isn't over in New York: it can't be closed yet
+    assert!(b
+        .try_add(
+            evening,
+            Some(SAM),
+            "period-close",
+            json!({"agreement": 1, "date": "2027-01-01"})
+        )
+        .is_err());
+    b.add(
+        evening,
+        Some(SAM),
+        "expense",
+        expense("2027-01-31", 1000, SAM, "Dinner"),
+    );
+    // and the zone can't move once things are recorded
+    assert!(b
+        .try_add(
+            evening,
+            None,
+            "setting",
+            json!({"key": "time_zone", "value": "UTC"})
+        )
+        .unwrap_err()
+        .contains("chosen when it is made"));
+}

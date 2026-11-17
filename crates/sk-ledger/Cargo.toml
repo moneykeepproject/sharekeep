@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+jiff.workspace = true
 sk-core.workspace = true
 sk-split.workspace = true
 sk-chain.workspace = true

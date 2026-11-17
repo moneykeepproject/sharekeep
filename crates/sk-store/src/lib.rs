@@ -198,6 +198,9 @@ pub const SETTINGS: &[&str] = &[
     "grace_days",
     // a household run by one keeper: their approval alone is enough
     "one_keeper",
+    // the book's time zone (IANA name), chosen when the book is made: its days are counted
+    // there (UTC for books made before it existed)
+    "time_zone",
 ];
 
 /// The kind of a settings record.

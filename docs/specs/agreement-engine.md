@@ -31,8 +31,8 @@ refused (HTTP 422) with a message for the person who sent it, and nothing is wri
 | entry-edit, entry-delete | members | entry exists, isn't deleted, isn't in a closed period; an edit stays in its agreement; a pot gets back what the old entry took |
 | dispute | members | the entry exists; `resolved` clears it |
 | deposit (create, pay-in, buy-out, deduct, refund) | members | as `docs/specs/split-engine.md` (Deposits); a buy-out of someone else's stake is a proposal the member giving it up approves; a deduction (no negative parts) is approved like a rule (everyone else, or the keeper) |
-| period-close | members | the period has ended (the record's UTC day is after it) and isn't already closed |
-| setting | hub computer | `dispute_mode`, `one_keeper`, `deposit_interest_bp`, `grace_days` |
+| period-close | members | the period has ended (the record's day in the book's time zone is after it) and isn't already closed |
+| setting | hub computer | `dispute_mode`, `one_keeper`, `deposit_interest_bp`, `grace_days`, `time_zone` |
 
 ## Rules and approvals
 
@@ -140,3 +140,12 @@ bills, special events, schedule changes, joining and leaving.
 or PDF to an expense, or takes one off, at any time (closed periods included: no money moves).
 At most 5 per expense; JPEG, PNG, WebP or PDF; at most 10 MB; not on a deleted expense or a
 payment. An edit keeps them. Book version 4.
+
+## Days
+
+A record's day is its hub timestamp's day in the book's time zone (`time_zone`, an IANA name
+such as `America/New_York`; the zone database is built into every ShareKeep, so all devices
+count the same days). The hub sets it to its computer's zone when a book is made; it can't
+change once anything is recorded. Books made before it count days in UTC. The web app's and
+desktop's "today" (default dates, what is due, whether a period has ended) is the book's day.
+
