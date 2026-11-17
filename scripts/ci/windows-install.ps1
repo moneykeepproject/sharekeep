@@ -78,6 +78,9 @@ function Get-HubFingerprint {
 function Assert-FirewallRule([bool]$present) {
     $null = & netsh.exe advfirewall firewall show rule name="$Rule"
     $has = ($LASTEXITCODE -eq 0)
+    # netsh exits 1 when the rule isn't there. GitHub's pwsh step ends with that last native exit
+    # code, so a passed scenario would fail the step: clear it once it has been read.
+    $global:LASTEXITCODE = 0
     if ($has -ne $present) { Fail "the firewall rule '$Rule' is $(if ($has) { 'there' } else { 'missing' })" }
     Note "  firewall rule '$Rule' $(if ($present) { 'there' } else { 'gone' })"
 }
@@ -153,3 +156,6 @@ try {
 finally {
     Save-Logs
 }
+# A scenario that got here passed (a failure throws): don't let a native command's exit code
+# from the checks above or from Save-Logs become the step's result.
+exit 0
