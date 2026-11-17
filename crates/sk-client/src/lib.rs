@@ -762,7 +762,7 @@ impl Replica {
             ),
             Found::Missing { have } => format!(
                 "The hub's history ends at record {}, before your checkpoint (record {}): records were removed. This device kept nothing. If the checkpoint was typed wrong, forget it in Settings.",
-                have.map_or(0, |h| h),
+                have.unwrap_or(0),
                 e.seq
             ),
         };
