@@ -74,10 +74,7 @@ pub fn agreements(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> 
             let waiting = l
                 .waiting_for(me)
                 .iter()
-                .filter(|p| match &p.kind {
-                    ProposalKind::Rule(r) => r.agreement == a.id,
-                    ProposalKind::Leave(x) => x.agreement == a.id,
-                })
+                .filter(|p| p.kind.agreement() == a.id)
                 .count();
             AgreementCard {
                 id: a.id,
@@ -474,7 +471,7 @@ pub struct ApprovalRow {
 }
 
 /// What waits for `me` to approve.
-pub fn approvals(l: &Ledger, me: MemberId) -> Vec<ApprovalRow> {
+pub fn approvals(l: &Ledger, me: MemberId, cur: Currency) -> Vec<ApprovalRow> {
     l.waiting_for(me)
         .into_iter()
         .map(|p| match &p.kind {
@@ -497,8 +494,73 @@ pub fn approvals(l: &Ledger, me: MemberId) -> Vec<ApprovalRow> {
                     name(l, p.by)
                 ),
             },
+            ProposalKind::Deposit(d) => deposit_approval(l, p, d, cur),
         })
         .collect()
+}
+
+/// A buy-out or deduction waiting for approval.
+fn deposit_approval(
+    l: &Ledger,
+    p: &sk_ledger::Proposal,
+    d: &sk_ledger::bodies::DepositBody,
+    cur: Currency,
+) -> ApprovalRow {
+    use sk_ledger::bodies::DepositBody as D;
+    let label = |a: &AgreementId, id: &sk_core::DepositId| {
+        l.agreements
+            .get(a)
+            .and_then(|g| g.deposits.get(id))
+            .map(|(dep, _)| dep.label.clone())
+            .unwrap_or_else(|| "the deposit".into())
+    };
+    match d {
+        D::BuyOut {
+            agreement,
+            id,
+            from,
+            to,
+            amount,
+        } => ApprovalRow {
+            seq: p.seq,
+            title: format!("Buy-out: {}", label(agreement, id)),
+            detail: format!(
+                "{} takes {} of {}'s part, proposed by {}",
+                name(l, *to),
+                money(cur, *amount),
+                name(l, *from),
+                name(l, p.by)
+            ),
+        },
+        D::Deduct {
+            agreement,
+            id,
+            shares,
+            reason,
+        } => ApprovalRow {
+            seq: p.seq,
+            title: format!("Deduction from {}", label(agreement, id)),
+            detail: format!(
+                "{}{}, proposed by {}",
+                shares
+                    .iter()
+                    .map(|(m, c)| format!("{} {}", name(l, *m), money(cur, *c)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                reason
+                    .as_deref()
+                    .filter(|r| !r.trim().is_empty())
+                    .map(|r| format!(" ({})", r.trim()))
+                    .unwrap_or_default(),
+                name(l, p.by)
+            ),
+        },
+        _ => ApprovalRow {
+            seq: p.seq,
+            title: "A change to a deposit".into(),
+            detail: format!("Proposed by {}", name(l, p.by)),
+        },
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1394,7 +1456,7 @@ pub fn snapshot(l: &Ledger, me: MemberId, cur: Currency, today: NaiveDate) -> Sn
         today,
         currency: cur.code().to_string(),
         cards: agreements(l, me, cur, today),
-        approvals: approvals(l, me),
+        approvals: approvals(l, me, cur),
         agreements: views,
         seals: seals(l),
         restores: l

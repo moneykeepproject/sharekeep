@@ -67,11 +67,11 @@ fn rules_members_periods_and_approvals() {
     assert_eq!(periods.len(), 2, "the agreement began last month");
     assert!(!periods[0].can_close);
     assert!(periods[1].can_close, "{}", periods[1].state);
-    let a = view::approvals(&l, JERRY);
+    let a = view::approvals(&l, JERRY, usd());
     assert_eq!(a.len(), 1);
     assert_eq!(a[0].title, "New rule: Streaming");
     assert!(
-        view::approvals(&l, MemberId(2)).is_empty(),
+        view::approvals(&l, MemberId(2), usd()).is_empty(),
         "Sam proposed it"
     );
 }

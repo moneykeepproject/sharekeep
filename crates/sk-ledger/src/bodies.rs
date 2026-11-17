@@ -248,6 +248,18 @@ pub enum DepositBody {
     },
 }
 
+impl DepositBody {
+    pub fn agreement(&self) -> AgreementId {
+        match self {
+            DepositBody::Create { agreement, .. }
+            | DepositBody::PayIn { agreement, .. }
+            | DepositBody::BuyOut { agreement, .. }
+            | DepositBody::Deduct { agreement, .. }
+            | DepositBody::Refund { agreement, .. } => *agreement,
+        }
+    }
+}
+
 /// `member-join`: a book member joins an agreement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberJoin {

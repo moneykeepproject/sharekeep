@@ -966,7 +966,7 @@ impl State {
             .collect();
         ui.set_cards(model(cards));
         ui.set_approvals(model(
-            view::approvals(l, me)
+            view::approvals(l, me, self.cur)
                 .into_iter()
                 .map(|a| ApprovalS {
                     seq: a.seq as i32,

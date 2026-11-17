@@ -199,6 +199,20 @@ impl Entry {
 pub enum ProposalKind {
     Rule(RuleProposal),
     Leave(MemberLeave),
+    /// A buy-out (the member giving up part of their stake approves) or a deduction (approved
+    /// like a rule): review M4.
+    Deposit(DepositBody),
+}
+
+impl ProposalKind {
+    /// The agreement it belongs to.
+    pub fn agreement(&self) -> AgreementId {
+        match self {
+            ProposalKind::Rule(r) => r.agreement,
+            ProposalKind::Leave(x) => x.agreement,
+            ProposalKind::Deposit(d) => d.agreement(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -922,7 +936,7 @@ impl Ledger {
             }
             "deposit" => {
                 let b: DepositBody = parse(&r.body)?;
-                self.deposit(author, today, b)?;
+                self.deposit(r.seq, author, today, b)?;
             }
             "period-close" => {
                 let b: PeriodClose = parse(&r.body)?;
@@ -1001,6 +1015,7 @@ impl Ledger {
                     s.left = Some(b.date);
                 }
             }
+            ProposalKind::Deposit(b) => self.apply_deposit(b.clone())?,
         }
         if let Some(p) = self.proposals.get_mut(&seq) {
             p.status = ProposalStatus::Approved;
@@ -1204,18 +1219,36 @@ impl Ledger {
 
     fn deposit(
         &mut self,
+        seq: u64,
         author: Option<MemberId>,
         today: NaiveDate,
         b: DepositBody,
     ) -> Result<(), Reject> {
-        let agreement = match &b {
-            DepositBody::Create { agreement, .. }
-            | DepositBody::PayIn { agreement, .. }
-            | DepositBody::BuyOut { agreement, .. }
-            | DepositBody::Deduct { agreement, .. }
-            | DepositBody::Refund { agreement, .. } => *agreement,
-        };
+        let agreement = b.agreement();
         self.author_in(agreement, author, today)?;
+        // moving or cutting someone's stake needs their say (review M4): a buy-out the member
+        // giving up part of their stake approves, a deduction everyone (or the keeper) does
+        let approvers = match (&b, author) {
+            (DepositBody::BuyOut { from, .. }, Some(by)) if *from != by => [*from].into(),
+            (DepositBody::Deduct { shares, .. }, Some(by)) => {
+                if shares.values().any(|s| *s < 0) {
+                    return Err(no("A deduction takes from the pot: no negative parts."));
+                }
+                self.approvers(agreement, by, today)
+            }
+            _ => BTreeSet::new(),
+        };
+        if approvers.is_empty() {
+            return self.apply_deposit(b);
+        }
+        // it must work today; it is checked again when the last approval comes
+        self.clone().apply_deposit(b.clone())?;
+        let by = author.expect("approvers only for a member's request");
+        self.propose(seq, by, ProposalKind::Deposit(b), approvers)
+    }
+
+    fn apply_deposit(&mut self, b: DepositBody) -> Result<(), Reject> {
+        let agreement = b.agreement();
         let ag = self.agreement(agreement)?;
         let member_ok = |ag: &Agreement, m: &MemberId| -> Result<(), Reject> {
             if ag.members.contains_key(m) {

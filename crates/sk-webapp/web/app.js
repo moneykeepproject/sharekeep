@@ -1326,7 +1326,11 @@ function depositMoveSheet(a, dep) {
             ? { op: 'deduct', agreement: a.id, id: dep.id, shares: { [m.from]: amount }, reason: (m.reason || '').trim() || undefined }
             : { op: 'buy-out', agreement: a.id, id: dep.id, from: m.from, to: m.to, amount };
         if (m.what === 'buy-out' && m.from === m.to) return toast('Pick two different people.');
-        if (await sendNow('deposit', b)) close();
+        if (await sendNow('deposit', b)) {
+          close();
+          // someone else's stake, or a deduction: it waits for approval
+          if (m.what === 'deduct' || (m.what === 'buy-out' && m.from !== S.member)) toast('Proposed. It takes effect once it is approved.');
+        }
       } }, 'Save'));
   });
 }

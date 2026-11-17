@@ -725,3 +725,75 @@ fn a_closed_periods_numbers_never_change() {
     );
     assert_eq!(b.balance(SAM), closed);
 }
+
+#[test]
+fn a_members_stake_moves_only_with_their_say() {
+    let mut b = household();
+    approved_rule(&mut b, equal_rule(1, "Shared", "2027-01-01", &[]));
+    b.add(
+        day(1, 2),
+        Some(JERRY),
+        "deposit",
+        json!({
+            "op": "create", "agreement": 1, "id": 1, "kind": "Held", "label": "Security deposit",
+            "holder": "Landlord", "refundable": "Yes",
+        }),
+    );
+    for m in [JERRY, SAM] {
+        b.add(
+            day(1, 2),
+            Some(m),
+            "deposit",
+            json!({"op": "pay-in", "agreement": 1, "id": 1, "member": m, "amount": 150000}),
+        );
+    }
+    let stake = |b: &Book, m: u32| {
+        let (_, st) = &b.ledger.agreements[&A].deposits[&sk_core::DepositId(1)];
+        st.stakes().get(&MemberId(m)).copied().unwrap_or(0)
+    };
+    // Sam can't take Jerry's stake alone: it waits for Jerry
+    let p = b.add(day(1, 3), Some(SAM), "deposit", json!({"op": "buy-out", "agreement": 1, "id": 1, "from": JERRY, "to": SAM, "amount": 150000}));
+    assert_eq!(stake(&b, JERRY), 150000);
+    assert_eq!(b.ledger.proposals[&p].status, ProposalStatus::Waiting);
+    assert!(b
+        .try_add(
+            day(1, 3),
+            Some(ALEX),
+            "approval",
+            json!({"proposal": p, "approve": true})
+        )
+        .is_err());
+    b.add(
+        day(1, 4),
+        Some(JERRY),
+        "approval",
+        json!({"proposal": p, "approve": true}),
+    );
+    assert_eq!((stake(&b, JERRY), stake(&b, SAM)), (0, 300000));
+    // giving up your own part needs no one else
+    b.add(
+        day(1, 5),
+        Some(SAM),
+        "deposit",
+        json!({"op": "buy-out", "agreement": 1, "id": 1, "from": SAM, "to": JERRY, "amount": 1000}),
+    );
+    assert_eq!(stake(&b, JERRY), 1000);
+    // a deduction can't move stake with a negative part, and waits for approval like a rule
+    assert!(b
+        .try_add(
+            day(1, 6),
+            Some(SAM),
+            "deposit",
+            json!({"op": "deduct", "agreement": 1, "id": 1, "shares": {"1": 1000, "2": -999}})
+        )
+        .unwrap_err()
+        .contains("negative"));
+    let d = b.add(
+        day(1, 6),
+        Some(SAM),
+        "deposit",
+        json!({"op": "deduct", "agreement": 1, "id": 1, "shares": {"2": 5000}, "reason": "Carpet"}),
+    );
+    assert_eq!(b.ledger.proposals[&d].status, ProposalStatus::Waiting);
+    assert_eq!(stake(&b, SAM), 299000);
+}
