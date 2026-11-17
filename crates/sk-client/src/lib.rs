@@ -610,14 +610,27 @@ impl Replica {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e.to_string()),
         };
-        let meta: ReplicaMeta = match std::fs::read(dir.join("replica.json")) {
+        let mut meta: ReplicaMeta = match std::fs::read(dir.join("replica.json")) {
             Ok(b) => serde_json::from_slice(&b).map_err(|e| e.to_string())?,
             Err(_) => ReplicaMeta::default(),
         };
+        let mut records = records;
         if !records.is_empty() {
             let head = sk_chain::verify(&records).map_err(|b| b.to_string())?;
-            if meta.head.is_some_and(|h| h != head) {
-                return Err("this device's copy of the history is damaged".into());
+            match meta.head {
+                // the two files are saved one after the other (review L5): a stop between
+                // them leaves the history ahead of the note of it. The records up to the
+                // noted head are kept; the rest is fetched again.
+                Some(h) if h != head => {
+                    let at = records
+                        .iter()
+                        .position(|r| r.seq == h.seq && r.hash == h.hash)
+                        .ok_or("this device's copy of the history is damaged")?;
+                    records.truncate(at + 1);
+                }
+                Some(_) => {}
+                // the note is missing: the history (checked above) says where it ends
+                None => meta.head = Some(head),
             }
         }
         Ok(Replica {
@@ -829,6 +842,70 @@ impl Replica {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_copy_saved_halfway_is_mended_when_it_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut recs = vec![sk_chain::next(
+            None,
+            0,
+            sk_chain::Author::hub(),
+            sk_chain::GENESIS,
+            json!({}),
+        )
+        .unwrap()];
+        for i in 0..2 {
+            let r = sk_chain::next(
+                recs.last(),
+                1,
+                sk_chain::Author::hub(),
+                "member-add",
+                json!({"id": i, "name": "A"}),
+            )
+            .unwrap();
+            recs.push(r);
+        }
+        std::fs::write(
+            dir.path().join("history.jsonl"),
+            sk_chain::export_lines(&recs),
+        )
+        .unwrap();
+        // stopped after the history was written, before the note of its head
+        let meta = ReplicaMeta {
+            head: Some(recs[1].head()),
+            ..Default::default()
+        };
+        std::fs::write(
+            dir.path().join("replica.json"),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+        let r = Replica::open(dir.path()).unwrap();
+        assert_eq!((r.records().len(), r.head()), (2, Some(recs[1].head())));
+        // the note lost altogether: the history says where it ends (never fetched twice)
+        std::fs::remove_file(dir.path().join("replica.json")).unwrap();
+        let r = Replica::open(dir.path()).unwrap();
+        assert_eq!(r.head(), Some(recs[2].head()));
+        // a note naming a record the history doesn't have: damaged
+        let other = sk_chain::next(
+            Some(&recs[0]),
+            1,
+            sk_chain::Author::hub(),
+            "member-add",
+            json!({"id": 9, "name": "B"}),
+        )
+        .unwrap();
+        let meta = ReplicaMeta {
+            head: Some(other.head()),
+            ..Default::default()
+        };
+        std::fs::write(
+            dir.path().join("replica.json"),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+        assert!(Replica::open(dir.path()).unwrap_err().contains("damaged"));
+    }
 
     fn nowhere() -> Client {
         // a port nothing listens on

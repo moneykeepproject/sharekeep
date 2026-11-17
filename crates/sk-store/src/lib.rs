@@ -317,6 +317,39 @@ pub fn prev_path(path: &Path) -> PathBuf {
     sibling(path, ".prev")
 }
 
+/// An encrypted book's save renames the book to `<file>.prev` and then the new file into
+/// place: a stop between the two leaves only `.prev` (review L6). Put it back; `true` when
+/// that was needed.
+pub fn finish_interrupted_save(path: &Path) -> StoreResult<bool> {
+    let prev = prev_path(path);
+    if path.exists() || !prev.is_file() {
+        return Ok(false);
+    }
+    std::fs::rename(&prev, path).map_err(|e| io_err("put back", path, &e))?;
+    Ok(true)
+}
+
+/// In a folder of books: put back every book whose save was interrupted (see
+/// [`finish_interrupted_save`]); the names of those put back.
+pub fn finish_interrupted_saves(dir: &Path) -> Vec<PathBuf> {
+    let suffix = format!(".{EXTENSION}.prev");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let book = name.strip_suffix(".prev")?.to_string();
+            if !name.ends_with(&suffix) {
+                return None;
+            }
+            let path = dir.join(book);
+            finish_interrupted_save(&path).ok()?.then_some(path)
+        })
+        .collect()
+}
+
 /// Open options that let a locked, open file be renamed on Windows.
 fn options() -> OpenOptions {
     #[cfg_attr(not(windows), allow(unused_mut))]
@@ -726,6 +759,7 @@ impl Store {
     /// Open a book. An encrypted book needs `secret`. A Hyperbook's whole history is
     /// verified first.
     pub fn open(path: &Path, secret: Option<&Secret>) -> StoreResult<Store> {
+        finish_interrupted_save(path)?;
         let store = match book_kind(path)? {
             BookKind::Plain => Store::open_plain(path, true)?,
             BookKind::Encrypted => {
@@ -1214,20 +1248,13 @@ pub fn set_aside_broken(path: &Path, label: &str) -> StoreResult<PathBuf> {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Book".into());
     let dir = path.parent().unwrap_or(Path::new("."));
-    let mut n = 1;
-    loop {
-        let name = if n == 1 {
-            format!("{stem} (broken {label}).sharekeep-broken")
-        } else {
-            format!("{stem} (broken {label}) ({n}).sharekeep-broken")
-        };
-        let to = dir.join(name);
-        if !to.exists() {
-            std::fs::rename(path, &to).map_err(|e| io_err("rename", path, &e))?;
-            return Ok(to);
-        }
-        n += 1;
-    }
+    // the name is reserved first and the book moved in without ever replacing a file that
+    // appears meanwhile (review L7), as new books and backups are
+    let base = dir.join(format!("{stem} (broken {label}).sharekeep-broken"));
+    let reserved = newfile::reserve_free(&base).map_err(|e| io_err("set aside", path, &e))?;
+    reserved
+        .fill_from(path)
+        .map_err(|e| io_err("set aside", path, &e))
 }
 
 /// Copy a backup into `dir` as a separate book (`<name> restored <label>.sharekeep`). The

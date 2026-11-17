@@ -452,3 +452,24 @@ fn recovery_reads_an_older_book_or_backup_without_changing_it() {
     drop(Store::open(&copy, None).unwrap());
     assert_eq!(version(&copy), "4");
 }
+
+#[test]
+fn a_save_stopped_halfway_is_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = Store::create(dir.path(), new_book("Home", false, Some(enc(false)))).unwrap();
+    add_entries(&mut c.store, 2);
+    drop(c.store);
+    // the book was moved to .prev and the new file never arrived
+    let prev = sk_store::prev_path(&c.path);
+    std::fs::rename(&c.path, &prev).unwrap();
+    assert_eq!(
+        sk_store::finish_interrupted_saves(dir.path()),
+        vec![c.path.clone()]
+    );
+    assert!(c.path.exists() && !prev.exists());
+    // opening does the same
+    std::fs::rename(&c.path, &prev).unwrap();
+    let secret = Secret::Password("correct horse battery".into());
+    let s = Store::open(&c.path, Some(&secret)).unwrap();
+    assert_eq!(s.records(0, 100).unwrap().len(), 3);
+}

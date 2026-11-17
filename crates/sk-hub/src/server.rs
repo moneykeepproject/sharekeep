@@ -295,6 +295,12 @@ const CURRENT_BOOK: &str = "current_book";
 /// hub that never chose, the first unencrypted one. The others are listed, closed.
 fn load_books(dir: &Path, current: Option<&str>, log: &Log) -> Vec<Book> {
     let mut out = Vec::new();
+    for p in sk_store::finish_interrupted_saves(dir) {
+        log(&format!(
+            "{}: its last save was interrupted; the previous version is back",
+            p.display()
+        ));
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
     };

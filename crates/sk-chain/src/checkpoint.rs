@@ -33,16 +33,20 @@ pub fn for_qr(text: &str) -> String {
 /// checkpoint typed back from paper or pasted from an email still reads.
 pub fn parse(text: &str) -> Option<Head> {
     let lower = text.to_ascii_lowercase();
-    // "record" followed by a number (a book may be called "Records")
-    let (seq, after) = lower.match_indices("record").find_map(|(i, _)| {
-        let rest = lower.get(i + "record".len()..)?;
-        let digits: String = rest
-            .trim_start()
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        Some((digits.parse::<u64>().ok()?, rest))
-    })?;
+    // the last "record" followed by a number (a book may be called "Records", or even
+    // "Record 5": its name comes first; review L9)
+    let (seq, after) = lower
+        .match_indices("record")
+        .filter_map(|(i, _)| {
+            let rest = lower.get(i + "record".len()..)?;
+            let digits: String = rest
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            Some((digits.parse::<u64>().ok()?, rest))
+        })
+        .last()?;
     // the fingerprint: the last 64 hex digits, read backwards (spaces and line breaks inside
     // it are allowed; the date's digits before it aren't taken)
     let mut rev = Vec::new();
@@ -139,6 +143,9 @@ mod tests {
         assert_eq!(parse(&t), Some(g.head()));
         assert!(for_qr(&t).is_ascii());
         assert_eq!(parse(&for_qr(&t)), Some(g.head()));
+        // a book named like a record number (review L9)
+        let t = text("Record 5", g.head(), "2027-02-03");
+        assert_eq!(parse(&t), Some(g.head()));
     }
 
     #[test]

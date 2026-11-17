@@ -408,15 +408,23 @@ impl Worker {
         let Some(p) = self.paired.as_mut() else {
             return Synced::default();
         };
-        let flush = p.outbox.flush(&p.client);
-        let mut problem = flush.stopped.as_ref().map(|e| e.to_string());
-        let mut offline = flush
-            .stopped
-            .as_ref()
-            .is_some_and(|e| matches!(e, sk_client::CallError::Offline(_)));
+        // the hub's history is checked first: nothing waiting is sent to a history that was
+        // restored or rewritten (review L4)
+        let mut problem = None;
+        let mut offline = false;
         let mut restore = None;
         let mut checkpoint_failed = false;
-        match p.replica.sync(&p.client, now_ms()) {
+        let mut checked = p.replica.sync(&p.client, now_ms());
+        if checked.is_ok() && !p.outbox.pending().is_empty() {
+            let flush = p.outbox.flush(&p.client);
+            problem = flush.stopped.as_ref().map(|e| e.to_string());
+            offline = flush
+                .stopped
+                .as_ref()
+                .is_some_and(|e| matches!(e, sk_client::CallError::Offline(_)));
+            checked = p.replica.sync(&p.client, now_ms());
+        }
+        match checked {
             Ok(_) => {}
             Err(SyncError::Offline(e)) => {
                 offline = matches!(e, sk_client::CallError::Offline(_));

@@ -174,9 +174,15 @@ async function sync() {
   S.busy = true;
   render();
   try {
-    await flush();
-    const v = await api('GET', '/api/v1/view');
+    // the hub's history is checked first: nothing waiting is sent to a history that was
+    // restored or rewritten (review L4)
+    let v = await api('GET', '/api/v1/view');
     await checkHistory(v);
+    if (S.outbox.length && !S.restoreOffer && !S.rewritten) {
+      await flush();
+      v = await api('GET', '/api/v1/view');
+      await checkHistory(v);
+    }
     S.view = v;
     store.set('view', v);
     S.offline = false;
@@ -798,7 +804,9 @@ function checkpointSheet(title) {
 /** The head in a checkpoint's text, forgiving about spacing and case (as the desktop app). */
 function parseCheckpoint(text) {
   const lower = String(text).toLowerCase();
-  const m = lower.match(/record\s*(\d+)/);
+  // the last "record <number>": a book's name comes first and may be "Record 5" (review L9)
+  const all = [...lower.matchAll(/record\s*(\d+)/g)];
+  const m = all[all.length - 1];
   if (!m) return null;
   const after = lower.slice(m.index + m[0].length);
   const rev = [];
