@@ -368,6 +368,8 @@ export component AppWindow inherits Window {
     // Hyperbook, Verify, recovery
     in property <bool> is-hyperbook;
     in property <string> hb-head;
+    // Settings > Help and questions (sk_view::help)
+    in property <string> help-text;
     in property <string> hb-fingerprint;
     in property <string> hb-seen;
     in property <string> hb-stale;
@@ -926,6 +928,11 @@ export component AppWindow inherits Window {
                     Hint { text: root.is-hyperbook ? "Two questions, answered from the whole history on this device: has it been changed, and do the numbers add up?" : "Do the numbers add up? Every record is replayed under the book's rules, on this device."; }
                     BigButton { text: "Verify the book"; primary: false; clicked => { root.verify(); } }
                     if root.verify-answer != "": Banner { text: root.verify-answer; warn: !root.verify-ok; }
+                }
+                Card {
+                    SectionTitle { text: "Help and questions"; }
+                    Hint { text: "The same answers are on the hub's help page, which a phone opens from its Settings."; }
+                    Text { text: root.help-text; color: Theme.ink; wrap: word-wrap; }
                 }
                 Card {
                     SectionTitle { text: "About"; }

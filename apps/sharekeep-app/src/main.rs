@@ -61,6 +61,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let is_hub = admin.is_some();
 
     let ui = AppWindow::new()?;
+    ui.set_help_text(sk_ui::help::plain_text().into());
     let (jobs, rx) = std::sync::mpsc::channel();
     let weak = ui.as_weak();
     std::thread::Builder::new()

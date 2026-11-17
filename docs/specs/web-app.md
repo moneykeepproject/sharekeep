@@ -82,3 +82,12 @@ on this device** (two taps: forgets this device's pairing and saved data, the ke
 service worker, then pairing starts again; nothing in the household's book is lost). Every screen
 is drawn inside a guard that shows any error the same way.
 
+## Help and questions
+
+`sk_view::help::FAQ` is the one list of questions and answers (a blank screen, clearing the
+browser's data for ShareKeep, the hub can't be reached, pairing codes, wrong person or a new
+phone, what is lost). The hub serves it at `/help` (no script, `app.css`, the same security
+headers; the service worker keeps a copy). The web app's Settings has **Open help**; the
+"couldn't start" screen links to `/help#blank`. The desktop app shows the same text in
+Settings > Help and questions.
+

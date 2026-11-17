@@ -3,6 +3,7 @@
 //! app.
 
 pub mod demo;
+pub mod help;
 pub mod phone;
 pub mod view;
 

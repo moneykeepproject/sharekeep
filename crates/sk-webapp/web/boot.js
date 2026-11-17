@@ -48,7 +48,11 @@
       if (!armed) { armed = true; over.textContent = 'Tap again to start over'; return; }
       startOver();
     });
-    card.append(t, p, p2, again, over);
+    const help = document.createElement('a');
+    help.className = 'link';
+    help.href = '/help#blank';
+    help.textContent = 'Help: what else to try';
+    card.append(t, p, p2, again, over, help);
     page.replaceChildren(card);
   }
 

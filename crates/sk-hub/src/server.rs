@@ -733,6 +733,13 @@ fn handle_device(shared: &Shared, mut req: Request) {
             200,
             &json!({"app": "sharekeep-hub", "version": env!("CARGO_PKG_VERSION")}),
         ),
+        ("GET", "/help") => serve_page(
+            shared,
+            req,
+            "/help",
+            sk_view::help::page_html().into_bytes(),
+            "text/html; charset=utf-8",
+        ),
         ("GET", p) if !p.starts_with("/api/") => serve_webapp(shared, req, p),
         ("POST", "/api/v1/pair") => {
             let r: Result<PairRequest, String> = read_json(&mut req);
@@ -778,8 +785,13 @@ fn serve_webapp(shared: &Shared, req: Request, path: &str) {
     let Some(a) = sk_webapp::asset(path) else {
         return fail(shared, req, 404, "No such page.");
     };
-    let mut resp = Response::from_data(a.body.to_vec()).with_status_code(200);
-    let mut headers = vec![("Content-Type", a.content_type), ("Connection", "close")];
+    serve_page(shared, req, path, a.body.to_vec(), a.content_type);
+}
+
+/// A page or file for browsers, with the web app's security headers.
+fn serve_page(shared: &Shared, req: Request, path: &str, body: Vec<u8>, content_type: &str) {
+    let mut resp = Response::from_data(body).with_status_code(200);
+    let mut headers = vec![("Content-Type", content_type), ("Connection", "close")];
     headers.extend(sk_webapp::HEADERS);
     for (k, v) in headers {
         if let Some(h) = header(k, v) {

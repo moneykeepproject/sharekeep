@@ -67,6 +67,7 @@ fn main() {
         (h as f32 * SCALE) as u32,
     ));
     let ui = AppWindow::new().unwrap();
+    ui.set_help_text(sk_ui::help::plain_text().into());
     ui.show().unwrap();
 
     let today = NaiveDate::from_ymd_opt(2027, 3, 14).unwrap();
@@ -191,7 +192,7 @@ fn main() {
     st.refused = vec!["expense: Sam left the agreement on Mar 1, so it can't include them.".into()];
     st.refresh(&ui);
     ui.set_page(4);
-    shot(&win, w, h * 2, &p("21-settings"));
+    shot(&win, w, h * 3, &p("21-settings"));
     st.save_checkpoint(&ui);
     st.verify(&ui);
     ui.set_check_ok(true);

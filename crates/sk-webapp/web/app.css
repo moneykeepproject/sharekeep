@@ -44,6 +44,8 @@ h2 { margin: 0; font-size: 18px; }
 .btn.secondary { background: transparent; color: var(--accent); }
 .btn.danger { background: transparent; color: var(--red); border-color: var(--red); }
 .btn:disabled { opacity: .45; cursor: default; }
+a.btn, a.link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; box-sizing: border-box; }
+#page > .card > p:not(.hint) { margin: 0; line-height: 1.45; }
 .link { background: none; border: 0; color: var(--accent); font-weight: 600; min-height: 44px; padding: 0 8px; cursor: pointer; }
 .link.light { color: #fff; } .link.red { color: var(--red); } .link.amber { color: var(--amber); }
 label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }

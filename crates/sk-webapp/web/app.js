@@ -693,6 +693,9 @@ function settingsPage() {
         ? 'Two questions, answered from the whole history: has it been changed, and do the numbers add up?'
         : 'Do the numbers add up? Every record is replayed under the book\'s rules.'),
       h('button', { class: 'btn secondary', onclick: verify }, 'Verify the book')),
+    h('div', { class: 'card' }, h('h2', {}, 'Help and questions'),
+      h('p', { class: 'hint' }, 'What to do when the hub can\'t be reached, a code doesn\'t work, or the screen stays empty, and how to clear the browser\'s data for ShareKeep.'),
+      h('a', { class: 'btn secondary', href: '/help' }, 'Open help')),
     h('div', { class: 'card' }, h('h2', {}, 'Install'),
       h('p', { class: 'hint' }, 'Add ShareKeep to the home screen: on an iPhone, Share > Add to Home Screen; on Android or a PC, the browser\'s Install app menu item.')),
     h('div', { class: 'card' }, h('h2', {}, 'Leave'),
