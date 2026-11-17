@@ -759,7 +759,9 @@ impl Replica {
     }
 
     /// When the hub's history differs from ours: is it because a backup was restored? That
-    /// is, a `restore` record continuing from a record this device has, unchanged.
+    /// is, a `restore` record this device doesn't already hold, sitting right after a record
+    /// this device has, unchanged. A restore it already holds (accepted weeks ago) says nothing
+    /// about a later change: that is a rewritten history.
     fn find_restore(&self, client: &Client) -> Option<RestoreOffer> {
         let ours = self.meta.head?;
         let mut from = 0;
@@ -777,7 +779,11 @@ impl Replica {
                     .iter()
                     .find(|x| x.seq == to)
                     .is_some_and(|x| x.hash.to_hex() == hash);
-                if shared && to < ours.seq {
+                let held = self
+                    .records
+                    .iter()
+                    .any(|x| x.seq == r.seq && x.hash == r.hash);
+                if shared && !held && r.seq == to + 1 && to < ours.seq {
                     found = Some(RestoreOffer {
                         seq: r.seq,
                         when: chrono::DateTime::from_timestamp_millis(r.ts)

@@ -102,6 +102,10 @@ const S = {
   // Hyperbooks: the last record this device saw ({seq, hash, date}), a restore waiting to be
   // accepted, and whether the hub's history no longer contains what this device saw
   seen: store.get('seen', null),
+  // Hyperbooks: earlier heads this device saw (the last 30), which pin the history before a
+  // restore point, and the restore records it already knew (never offered again)
+  trail: store.get('trail', []),
+  knownRestores: store.get('knownRestores', []),
   restoreOffer: null,
   rewritten: false,
 };
@@ -213,27 +217,42 @@ async function checkHistory(v) {
     S.rewritten = false;
     S.seen = { seq: v.head.seq, hash: v.head.hash, date: v.today };
     store.set('seen', S.seen);
+    remember(v);
     return;
   }
-  const r = (v.restores || []).filter((x) => x.to_seq < seen.seq).pop();
-  if (seen.checkpoint && r) {
-    // a new device that started from a checkpoint the household's restore no longer holds:
-    // there is nothing of its own to lose, but the member still accepts the restore
-    S.restoreOffer = { seq: r.seq, date: r.date, to_seq: r.to_seq, lost_from: r.to_seq + 1, lost_to: seen.seq };
-    S.rewritten = false;
-    return;
-  }
-  if (r && !r.accepted_by_me) {
-    S.restoreOffer = { seq: r.seq, date: r.date, to_seq: r.to_seq, lost_from: r.to_seq + 1, lost_to: seen.seq };
-    S.rewritten = false;
-  } else if (r) {
-    // accepted on this member's other device: carry on
+  // Only a restore this device hasn't met before, sitting right after the record it continues
+  // from, is offered; the device itself decides, whatever the hub says about other devices.
+  // Anything else is a rewritten history.
+  const known = S.knownRestores || [];
+  const r = (v.restores || [])
+    .filter((x) => x.to_seq < seen.seq && x.seq === x.to_seq + 1 && !known.includes(x.seq))
+    .pop();
+  if (!r || !await pinned(r)) {
     S.restoreOffer = null;
-    S.seen = { seq: v.head.seq, hash: v.head.hash, date: v.today };
-    store.set('seen', S.seen);
-  } else {
     S.rewritten = true;
+    return;
   }
+  S.restoreOffer = { seq: r.seq, date: r.date, to_seq: r.to_seq, lost_from: r.to_seq + 1, lost_to: seen.seq, accepted: r.accepted_by_me };
+  S.rewritten = false;
+}
+
+/** Keep the head just checked, and the restores the history already holds. */
+function remember(v) {
+  const trail = (S.trail || []).filter((p) => p.seq < v.head.seq);
+  trail.push({ seq: v.head.seq, hash: v.head.hash });
+  S.trail = trail.slice(-30);
+  store.set('trail', S.trail);
+  S.knownRestores = (v.restores || []).map((x) => x.seq);
+  store.set('knownRestores', S.knownRestores);
+}
+
+/** The history up to a restore point is still what this device saw (its latest pin there). */
+async function pinned(r) {
+  const pin = (S.trail || []).filter((p) => p.seq <= r.to_seq).pop();
+  if (!pin) return true;
+  if (pin.seq === r.to_seq) return pin.hash === r.to_hash;
+  const page = await api('GET', '/api/v1/records?from=' + pin.seq + '&limit=1');
+  return !!(page.records[0] && page.records[0].seq === pin.seq && page.records[0].hash === pin.hash);
 }
 
 function restoreText(o) {
@@ -246,10 +265,14 @@ async function acceptRestore() {
   const o = S.restoreOffer;
   if (!o) return;
   try {
-    await api('POST', '/api/v1/records', { client_id: randomId(), kind: 'restore-accept', body: { restore: o.seq } });
+    // already accepted on another of this member's devices: this device only agrees
+    if (!o.accepted) await api('POST', '/api/v1/records', { client_id: randomId(), kind: 'restore-accept', body: { restore: o.seq } });
     S.restoreOffer = null;
     S.seen = null;
     store.del('seen');
+    // what this device saw after the restore point is gone from the history
+    S.trail = (S.trail || []).filter((p) => p.seq <= o.to_seq);
+    store.set('trail', S.trail);
     await sync();
   } catch (e) {
     toast(e.message);
@@ -323,8 +346,10 @@ async function pair(code, pin, device) {
 }
 
 function forget() {
-  for (const k of ['token', 'member', 'book', 'view', 'outbox', 'refused', 'seen']) store.del(k);
+  for (const k of ['token', 'member', 'book', 'view', 'outbox', 'refused', 'seen', 'trail', 'knownRestores']) store.del(k);
   S.seen = null;
+  S.trail = [];
+  S.knownRestores = [];
   Object.assign(S, { token: null, member: null, book: null, view: null, outbox: [], refused: [], page: 'home' });
   render();
 }

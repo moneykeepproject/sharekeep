@@ -319,6 +319,34 @@ try:
                 p3.click('text=Forget the checkpoint')
                 p3.wait_for_selector("text=doesn't contain your checkpoint", state='detached')
             ctx3.close()
+        # Hyperbook witness (review H1): the phone decides about a restore itself. A restore it
+        # already knew never excuses a later rewrite, and a new one is always offered, even if
+        # the hub says this member accepted it elsewhere.
+        verdicts = pg.evaluate("""async () => {
+            const keep = { seen: S.seen, trail: S.trail, known: S.knownRestores };
+            const v = JSON.parse(JSON.stringify(S.view));
+            const head = v.head.seq;
+            const restore = { seq: 3, date: '2026-11-15', to_seq: 2, to_hash: 'x', accepted_by_me: true };
+            v.restores = [restore];
+            const out = {};
+            S.seen = { seq: head, hash: 'f'.repeat(64) };
+            S.trail = []; S.knownRestores = [3];
+            await checkHistory(v);
+            out.known = { rewritten: S.rewritten, offer: !!S.restoreOffer };
+            S.knownRestores = [];
+            await checkHistory(v);
+            out.fresh = { rewritten: S.rewritten, offer: !!S.restoreOffer };
+            S.trail = [{ seq: 2, hash: 'y' }];
+            await checkHistory(v);
+            out.unpinned = { rewritten: S.rewritten, offer: !!S.restoreOffer };
+            S.seen = keep.seen; S.trail = keep.trail; S.knownRestores = keep.known;
+            S.rewritten = false; S.restoreOffer = null;
+            return out;
+        }""")
+        print('restore verdicts', verdicts)
+        assert verdicts['known'] == {'rewritten': True, 'offer': False}, verdicts
+        assert verdicts['fresh'] == {'rewritten': False, 'offer': True}, verdicts
+        assert verdicts['unpinned'] == {'rewritten': True, 'offer': False}, verdicts
         # a device whose saved data the app can't read: the screen says so (never empty), and
         # Start over brings it back to pairing
         ctx4 = b.new_context(viewport={'width': 400, 'height': 820}, ignore_https_errors=True)

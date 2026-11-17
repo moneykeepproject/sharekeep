@@ -60,9 +60,14 @@ The hub's certificate page (`http://<address>:15080/`) shows the iPhone and Andr
 
 ## Hyperbook
 
-- The app remembers the last head it saw (`seen`). Each sync asks the hub for that record;
-  if it changed, a `restore` covering it becomes an offer (Accept, read-only until then),
-  otherwise a warning that the history was changed.
+- The app remembers the last head it saw (`seen`), the last 30 heads it checked (`trail`)
+  and the restore records the history already held (`knownRestores`). Each sync asks the hub
+  for `seen`; if it changed, only a restore the phone hasn't met before, right after the
+  record it continues from, and with the history up to that record matching the phone's
+  latest pin there, becomes an offer (Accept, read-only until then). Anything else is the
+  warning that the history was changed. The phone never carries on silently because the hub
+  says the member accepted elsewhere: it still offers, and Accept then only agrees on this
+  device.
 - Settings > Hyperbook: the head, "last saw", Save a checkpoint (copy, save as a file),
   Check a checkpoint (against the hub), Check a statement (`crypto.subtle` SHA-256 of a
   picked PDF, matched against the view's seals; the file stays on the device). Print prints

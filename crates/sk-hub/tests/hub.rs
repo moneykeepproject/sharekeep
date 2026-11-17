@@ -888,6 +888,44 @@ fn a_broken_hyperbook_is_restored_from_a_backup_and_devices_accept_it() {
     sam.submit_now("expense", &expense(500, 2)).unwrap();
     replica.sync(&sam, 5).unwrap();
     assert_eq!(replica.head().unwrap().seq, offer.seq + 2);
+
+    // later, someone rewrites the records after the restore with a valid chain: the old
+    // restore (which this device already holds) is no excuse, it's a rewritten history
+    let seen = replica.head().unwrap();
+    h.running.take().unwrap().stop();
+    let restored = h
+        .data
+        .join("books")
+        .join(done["file"].as_str().unwrap_or(&file));
+    let restored = if restored.exists() {
+        restored
+    } else {
+        std::fs::read_dir(h.data.join("books"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "sharekeep"))
+            .unwrap()
+    };
+    {
+        let c = rusqlite::Connection::open(&restored).unwrap();
+        c.execute_batch(&format!(
+            "DROP TRIGGER records_no_delete; DELETE FROM records WHERE seq > {};",
+            offer.seq + 1
+        ))
+        .unwrap();
+    }
+    {
+        let mut s = sk_store::Store::open(&restored, None).unwrap();
+        s.append(5, sk_chain::Author::hub(), "expense", json!({"amount": 1}))
+            .unwrap();
+    }
+    h.running = Some(sk_hub::start(options(&h.data, &h.clock)).unwrap());
+    let sam = Client::new(h.address(), sam.token().unwrap());
+    match replica.sync(&sam, 6) {
+        Err(SyncError::Rewritten(b)) => assert_eq!(b.at, seen.seq),
+        other => panic!("expected a rewritten history, got {other:?}"),
+    }
 }
 
 #[test]

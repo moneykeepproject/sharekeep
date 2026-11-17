@@ -61,8 +61,10 @@ pairing code copied from MoneyKeep).
 - **Replica**: the device's copy of the history, checked as it loads and as it syncs. Each
   sync asks again for the device's own head: if the hub no longer has it unchanged, the
   history was rewritten — the sync stops, warns, and keeps the copy as it was. If the hub's
-  history has a `restore` continuing from a record this device has unchanged, the sync
-  answers `Restored` with an offer instead (which records aren't in the backup);
+  history has a `restore` this device doesn't already hold, sitting right after a record this
+  device has unchanged (`restore.seq == restored_to.seq + 1`), the sync answers `Restored`
+  with an offer instead (which records aren't in the backup); a restore the device already
+  holds never excuses a later change;
   `accept_restore` drops the device's later records, fetches the hub's, and the app then
   submits `restore-accept`. Until then the device sends nothing. A record whose kind isn't in
   `sk_ledger::KINDS` (the hub runs a newer ShareKeep) stops the sync: the device keeps the
