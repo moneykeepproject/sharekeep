@@ -109,8 +109,72 @@ fn check_workflows(root: &Path) -> Vec<String> {
     problems
 }
 
+/// Keys repeated in the same mapping (GitHub refuses such a workflow; another reader keeps
+/// the last copy). A small indentation reader: enough for workflow files, which use block
+/// style, `- ` list items and `|` / `>` text blocks.
+fn repeated_keys(text: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let mut stack: Vec<(usize, Vec<String>)> = Vec::new();
+    let mut block: Option<usize> = None;
+    for (i, raw) in text.lines().enumerate() {
+        let trimmed = raw.trim_start();
+        let mut indent = raw.len() - trimmed.len();
+        if let Some(b) = block {
+            if trimmed.is_empty() || indent > b {
+                continue;
+            }
+            block = None;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("---") {
+            continue;
+        }
+        let mut content = trimmed;
+        if let Some(rest) = content.strip_prefix("- ") {
+            // a list item opens a new mapping
+            indent += 2;
+            while stack.last().is_some_and(|(n, _)| *n >= indent) {
+                stack.pop();
+            }
+            stack.push((indent, Vec::new()));
+            content = rest.trim_start();
+        } else if content == "-" {
+            continue;
+        }
+        while stack.last().is_some_and(|(n, _)| *n > indent) {
+            stack.pop();
+        }
+        let Some((key, value)) = content.split_once(':') else {
+            continue;
+        };
+        if !(value.is_empty() || value.starts_with(' '))
+            || key.contains(['{', '[', ' ']) && !key.starts_with(['"', '\''])
+        {
+            continue;
+        }
+        let key = key.trim_matches(['"', '\'']).to_string();
+        match stack.last_mut() {
+            Some((n, keys)) if *n == indent => {
+                if keys.contains(&key) {
+                    found.push((i + 1, key));
+                } else {
+                    keys.push(key);
+                }
+            }
+            _ => stack.push((indent, vec![key])),
+        }
+        let v = value.split(" #").next().unwrap_or("").trim();
+        if v.starts_with('|') || v.starts_with('>') {
+            block = Some(indent);
+        }
+    }
+    found
+}
+
 fn workflow_problems(name: &str, text: &str) -> Vec<String> {
-    let mut problems = Vec::new();
+    let mut problems: Vec<String> = repeated_keys(text)
+        .into_iter()
+        .map(|(line, key)| format!("{name}:{line}: \"{key}\" appears twice in the same place"))
+        .collect();
     let names_mac = text
         .lines()
         .map(|l| l.split('#').next().unwrap_or(""))
@@ -202,6 +266,21 @@ mod tests {
         let root = workspace_root();
         assert_eq!(check_workflows(&root), Vec::<String>::new());
         assert_eq!(check_guards(&root), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_key_twice_in_one_place_is_refused() {
+        let joined = "on:\n  push:\npermissions:\n  contents: write\njobs:\n  a:\n    steps:\n      - name: x\n        run: |\n          jobs:\n          a: 1\n      - name: y\npermissions:\n  contents: read\njobs:\n  b:\n";
+        let found = repeated_keys(joined);
+        assert_eq!(
+            found.iter().map(|(_, k)| k.as_str()).collect::<Vec<_>>(),
+            ["permissions", "jobs"]
+        );
+        // the same key in different places, list items and text blocks are fine
+        let fine = "jobs:\n  a:\n    name: a\n    steps:\n      - name: x\n      - name: y\n  b:\n    name: b\n";
+        assert!(repeated_keys(fine).is_empty());
+        let old = "jobs:\n  windows:\n    runs-on: x\n  macos:\n        description: y\n  windows:\n    runs-on: z\n";
+        assert_eq!(repeated_keys(old).len(), 1);
     }
 
     #[test]
