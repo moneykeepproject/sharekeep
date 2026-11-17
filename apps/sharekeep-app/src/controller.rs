@@ -1468,8 +1468,8 @@ impl State {
 
     /// Exact amounts: a member's fixed amount as typed (blank or unreadable: none).
     pub fn rule_amount(&mut self, ui: &AppWindow, i: i32, text: &str) {
-        let cents = self.cur.parse(text.trim()).unwrap_or(0);
-        self.rule_edit(ui, |d| d.set_amount(i as usize, cents));
+        let cents = self.cur.parse(text.trim());
+        self.rule_edit(ui, |d| d.set_amount_text(i as usize, text, cents));
     }
 
     pub fn open_rule(&mut self, ui: &AppWindow) {
@@ -1533,11 +1533,8 @@ impl State {
                     value: r.value,
                     included: r.included,
                     locked: r.locked,
-                    amount: s(if r.cents > 0 {
-                        self.cur.format_number(r.cents)
-                    } else {
-                        String::new()
-                    }),
+                    // as typed: never reformatted while someone types it
+                    amount: s(&r.amount_text),
                     remainder: r.remainder,
                 })
                 .collect(),

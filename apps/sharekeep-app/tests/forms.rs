@@ -202,3 +202,54 @@ fn a_new_agreements_schedule_from_the_options() {
         assert!(s.period_containing(today).is_some());
     }
 }
+
+#[test]
+fn exact_amounts_stay_as_typed() {
+    use slint::Model;
+    let win = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let _ = slint::platform::set_platform(Box::new(Headless(win)));
+    let ui = AppWindow::new().unwrap();
+    let today = NaiveDate::from_ymd_opt(2027, 3, 14).unwrap();
+    let (jobs, _rx) = std::sync::mpsc::channel();
+    let cfg = AppConfig {
+        member: Some(1),
+        book: Some(BookFacts {
+            id: "demo".into(),
+            name: "Home".into(),
+            currency: "USD".into(),
+            hyperbook: false,
+        }),
+        ..Default::default()
+    };
+    let mut st = State::new(std::env::temp_dir(), cfg, jobs, false);
+    st.today = today;
+    st.ledger = sk_ui::demo::ledger(today);
+    st.agreement = Some(AgreementId(1));
+    st.refresh(&ui);
+    st.open_rule(&ui);
+    st.rule_edit(&ui, |d| d.set_method(view::EXACT));
+    let shown = |ui: &AppWindow, i: usize| {
+        ui.get_rule_weights()
+            .row_data(i)
+            .unwrap()
+            .amount
+            .to_string()
+    };
+    // typed one key at a time, as a person does: every step stays on screen
+    let mut typed = String::new();
+    for k in "800.50".chars() {
+        typed.push(k);
+        st.rule_amount(&ui, 0, &typed);
+        assert_eq!(shown(&ui, 0), typed, "after typing {typed:?}");
+    }
+    // and the rule uses it: $800.50 fixed for the first person
+    let first = ui.get_rule_examples().row_data(0).unwrap();
+    assert_eq!(first.rows.row_data(0).unwrap().amount, "$800.50");
+    // the amount stays when someone else is given what's left, and after a sync's refresh
+    st.rule_edit(&ui, |d| d.set_remainder(1));
+    st.refresh(&ui);
+    assert_eq!(shown(&ui, 0), "800.50");
+    // something that isn't an amount stays on screen too, and counts as none
+    st.rule_amount(&ui, 0, "8x");
+    assert_eq!(shown(&ui, 0), "8x");
+}

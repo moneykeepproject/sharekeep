@@ -451,6 +451,9 @@ pub struct WeightRow {
     pub locked: bool,
     /// Exact amounts: this member's fixed amount, in cents.
     pub cents: Cents,
+    /// Exact amounts: the amount as typed, shown back unchanged (a half-typed "800." isn't
+    /// an amount yet, and must not be cleared while typing).
+    pub amount_text: String,
     /// Exact amounts: this member takes whatever is left.
     pub remainder: bool,
 }
@@ -485,6 +488,7 @@ impl RuleDraft {
                 included: true,
                 locked: false,
                 cents: 0,
+                amount_text: String::new(),
                 remainder: false,
             })
             .collect();
@@ -504,6 +508,7 @@ impl RuleDraft {
         let last = self.rows.iter().rposition(|r| r.included);
         for (i, r) in self.rows.iter_mut().enumerate() {
             r.cents = 0;
+            r.amount_text.clear();
             r.remainder = self.method == EXACT && Some(i) == last;
             r.locked = false;
             r.value = match self.method {
@@ -595,6 +600,15 @@ impl RuleDraft {
     pub fn set_amount(&mut self, i: usize, cents: Cents) {
         if let Some(r) = self.rows.get_mut(i) {
             r.cents = cents.max(0);
+        }
+    }
+
+    /// Exact amounts: the amount as the person types it, and what it reads as (`None` while
+    /// it isn't an amount yet: no fixed amount, but the text stays).
+    pub fn set_amount_text(&mut self, i: usize, text: &str, cents: Option<Cents>) {
+        if let Some(r) = self.rows.get_mut(i) {
+            r.amount_text = text.to_string();
+            r.cents = cents.unwrap_or(0).max(0);
         }
     }
 
