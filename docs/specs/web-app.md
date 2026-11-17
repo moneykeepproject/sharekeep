@@ -72,3 +72,13 @@ The hub's certificate page (`http://<address>:15080/`) shows the iPhone and Andr
   accept offer. The "history was changed" warning offers "Accept the hub's history". The first
   checkpoint is offered after pairing and after closing a period.
 - Settings > Verify (`/api/v1/verify`); Periods > Export to a spreadsheet (CSV).
+
+## Never an empty screen
+
+`boot.js` loads before `app.js` (same origin, so the CSP allows it). If the app can't start (a
+script error, data it can't read, or `app.js` not running within 4 s of loading), the page says
+"ShareKeep couldn't start on this device" with the error, **Try again** (reload) and **Start over
+on this device** (two taps: forgets this device's pairing and saved data, the kept files and the
+service worker, then pairing starts again; nothing in the household's book is lost). Every screen
+is drawn inside a guard that shows any error the same way.
+

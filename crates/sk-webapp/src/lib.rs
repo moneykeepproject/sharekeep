@@ -25,8 +25,9 @@ macro_rules! file {
 }
 
 /// Every file, by the path it's served at.
-pub const FILES: [(&str, Asset); 6] = [
+pub const FILES: [(&str, Asset); 7] = [
     file!("index.html", "text/html; charset=utf-8"),
+    file!("boot.js", "text/javascript; charset=utf-8"),
     file!("app.css", "text/css; charset=utf-8"),
     file!("app.js", "text/javascript; charset=utf-8"),
     file!("sw.js", "text/javascript; charset=utf-8"),

@@ -327,7 +327,18 @@ function agreementView() {
   return S.view && S.view.agreements.find((a) => a.id === S.agreement);
 }
 
+// Any error while drawing a screen is shown, never an empty page (boot.js draws it).
 function render() {
+  try {
+    renderScreen();
+    window.skStarted = true;
+  } catch (e) {
+    if (window.skStartFailed) window.skStartFailed((e && e.message) || String(e));
+    if (window.console) console.error(e);
+  }
+}
+
+function renderScreen() {
   const paired = !!S.token;
   const ag = agreementView();
   const inAgreement = paired && S.page === 'agreement' && ag;

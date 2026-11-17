@@ -293,6 +293,24 @@ try:
                 p3.click('text=Forget the checkpoint')
                 p3.wait_for_selector("text=doesn't contain your checkpoint", state='detached')
             ctx3.close()
+        # a device whose saved data the app can't read: the screen says so (never empty), and
+        # Start over brings it back to pairing
+        ctx4 = b.new_context(viewport={'width': 400, 'height': 820}, ignore_https_errors=True)
+        p4 = ctx4.new_page()
+        p4.goto(code['url'].split('#')[0])
+        p4.evaluate("""() => {
+            localStorage.setItem('sk.token', JSON.stringify('x'));
+            localStorage.setItem('sk.book', JSON.stringify({name: 'Home', hyperbook: true}));
+            localStorage.setItem('sk.view', JSON.stringify({cards: 5}));
+        }""")
+        p4.goto(code['url'].split('#')[0])
+        p4.wait_for_selector("text=ShareKeep couldn't start on this device")
+        assert 'What went wrong:' in p4.text_content('#page')
+        p4.screenshot(path=f'{out}/17-start-failed.png')
+        p4.click('text=Start over on this device')
+        p4.click('text=Tap again to start over')
+        p4.wait_for_selector('text=Step 1 of 3')
+        ctx4.close()
         sw = pg.evaluate('navigator.serviceWorker.getRegistrations().then(r => r.length)')
         print('service workers', sw)
         b.close()
