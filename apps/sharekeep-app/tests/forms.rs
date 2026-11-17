@@ -160,3 +160,45 @@ fn ez_start_goes_back_to_any_step_and_on_again() {
     st.ez_back(&ui);
     assert_eq!(ui.get_ez_step(), 3);
 }
+
+#[test]
+fn a_new_agreements_schedule_from_the_options() {
+    use sharekeep_app::controller::agreement_schedule as sched;
+    // Wednesday 2026-11-18
+    let today = NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+    let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+    // monthly on the 1st: the period started on Nov 1
+    let (v, start) = sched(2, "1", 0, "", today).unwrap();
+    assert_eq!(start, d("2026-11-01"));
+    assert_eq!(v["Monthly"]["day"]["Day"], 1);
+    // on the 25th: last month's 25th
+    assert_eq!(sched(2, "25", 0, "", today).unwrap().1, d("2026-10-25"));
+    // 31: the last day of the month
+    let (v, start) = sched(2, "31", 0, "", today).unwrap();
+    assert_eq!(v["Monthly"]["day"], "Last");
+    assert_eq!(start, d("2026-10-31"));
+    // weekly on Friday: last Friday; every 2 weeks on Wednesday: today
+    let (v, start) = sched(0, "", 4, "", today).unwrap();
+    assert_eq!(
+        (v["Weekly"]["weekday"].as_str(), start),
+        (Some("Fri"), d("2026-11-13"))
+    );
+    let (v, start) = sched(1, "", 2, "", today).unwrap();
+    assert_eq!((v["Weekly"]["every"].as_u64(), start), (Some(2), today));
+    // every 10 days from a typed start
+    let (v, start) = sched(3, "10", 0, "2026-11-05", today).unwrap();
+    assert_eq!(
+        (v["EveryNDays"]["days"].as_u64(), start),
+        (Some(10), d("2026-11-05"))
+    );
+    assert!(sched(3, "0", 0, "", today).is_err());
+    assert!(sched(2, "40", 0, "", today).is_err());
+    assert!(sched(2, "1", 0, "next week", today).is_err());
+    // every schedule made here is one the engine accepts
+    for (how, day) in [(0, ""), (1, ""), (2, "1"), (2, "31"), (3, "14")] {
+        let (v, _) = sched(how, day, 3, "", today).unwrap();
+        let s: sk_split::periods::Schedule = serde_json::from_value(v).unwrap();
+        s.validate().unwrap();
+        assert!(s.period_containing(today).is_some());
+    }
+}

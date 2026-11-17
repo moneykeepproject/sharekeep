@@ -8,12 +8,97 @@ use serde_json::{json, Value};
 use sk_client::{Client, HubAddress};
 use sk_core::{AgreementId, Currency, MemberId, RuleId};
 use sk_ledger::{Ledger, ProposalKind};
+use sk_ui::phone as view_phone;
 use sk_ui::view::{self, RuleDraft, EDITOR_METHODS};
 use sk_ui::*;
 use slint::{Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+
+/// A new agreement's schedule from the options: how (0 weekly, 1 every 2 weeks, 2 monthly,
+/// 3 every N days), the day (of the month, or N), the weekday (0 = Monday) and the start (empty:
+/// the start of the period today is in). Returns the schedule's JSON and its start.
+pub fn agreement_schedule(
+    how: i32,
+    day: &str,
+    weekday: i32,
+    start: &str,
+    today: NaiveDate,
+) -> Result<(Value, NaiveDate), String> {
+    const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let typed = if start.is_empty() {
+        None
+    } else {
+        Some(
+            NaiveDate::parse_from_str(start, "%Y-%m-%d")
+                .map_err(|_| "Type the first period's start as YYYY-MM-DD, or leave it empty.")?,
+        )
+    };
+    let n = || -> Result<u32, String> {
+        day.parse::<u32>()
+            .map_err(|_| "Type a number of days.".to_string())
+    };
+    Ok(match how {
+        0 | 1 => {
+            let w = weekday.clamp(0, 6) as u32;
+            // the latest such weekday on or before today
+            let back = (7 + today.weekday().num_days_from_monday() - w) % 7;
+            let start = typed.unwrap_or(today - chrono::Days::new(u64::from(back)));
+            (
+                json!({"Weekly": {"start": start, "weekday": DAYS[w as usize], "every": if how == 0 { 1 } else { 2 }}}),
+                start,
+            )
+        }
+        3 => {
+            let n = n()?;
+            if !(1..=365).contains(&n) {
+                return Err("A period is 1 to 365 days.".into());
+            }
+            let start = typed.unwrap_or(today);
+            (json!({"EveryNDays": {"start": start, "days": n}}), start)
+        }
+        _ => {
+            let d = n().map_err(|_| "Type the day of the month, like 1.".to_string())?;
+            if !(1..=31).contains(&d) {
+                return Err("The day is 1 to 28, or 31 for the last day.".into());
+            }
+            let last = d > 28;
+            // the latest such day on or before today
+            let this_month = |t: NaiveDate| {
+                if last {
+                    t.with_day(1)
+                        .and_then(|f| f.checked_add_months(chrono::Months::new(1)))
+                        .and_then(|f| f.pred_opt())
+                } else {
+                    t.with_day(d)
+                }
+            };
+            let start = match typed {
+                Some(s) => s,
+                None => match this_month(today) {
+                    Some(s) if s <= today => s,
+                    _ => {
+                        let prev = today
+                            .with_day(1)
+                            .and_then(|f| f.pred_opt())
+                            .unwrap_or(today);
+                        this_month(prev).unwrap_or(today)
+                    }
+                },
+            };
+            let day = if last {
+                json!("Last")
+            } else {
+                json!({"Day": d})
+            };
+            (
+                json!({"Monthly": {"start": start, "day": day, "every": 1}}),
+                start,
+            )
+        }
+    })
+}
 
 /// One person's days or usage as typed: (member, name, text).
 pub type NeedRow = (MemberId, String, String);
@@ -335,6 +420,7 @@ impl State {
                     .collect();
                 ui.set_hub_books(model(books));
                 ui.set_hub_pin_set(v["pin_set"] == true);
+                ui.set_hub_own_fingerprint(s(v["fingerprint"].as_str().unwrap_or("")));
                 self.hub_pin_set = v["pin_set"] == true;
                 if !self.keep_info {
                     ui.set_hub_info(s(format!(
@@ -406,6 +492,7 @@ impl State {
                     v["certificate_page"].as_str().unwrap_or("")
                 )));
                 ui.set_hub_qr(qr_image(&url));
+                ui.set_hub_cert_page(s(v["certificate_page"].as_str().unwrap_or("")));
             }
             AdminThen::BookMade => {
                 let name = v["book"]["name"].as_str().unwrap_or("The book");
@@ -1676,7 +1763,26 @@ impl State {
         ui.set_hub_pick_count(self.hub_pick.len() as i32);
         ui.set_ez_people(self.hub_ledger.members.len() as i32);
         ui.set_ez_has_agreement(!self.hub_ledger.agreements.is_empty());
+        ui.set_new_agreement_start_hint(s(agreement_schedule(
+            ui.get_new_agreement_how(),
+            ui.get_new_agreement_day().trim(),
+            ui.get_new_agreement_weekday(),
+            "",
+            self.today,
+        )
+        .map(|(_, d)| d.to_string())
+        .unwrap_or_default()));
         ui.set_hub_pin_set(self.hub_pin_set);
+        // numbered, one paragraph per step
+        let plain = |l: &[&str]| {
+            s(l.iter()
+                .enumerate()
+                .map(|(i, x)| format!("{}.  {}", i + 1, view_phone::plain(x)))
+                .collect::<Vec<_>>()
+                .join("\n\n"))
+        };
+        ui.set_ez_apple_steps(plain(&view_phone::APPLE));
+        ui.set_ez_android_steps(plain(&view_phone::ANDROID));
         ui.set_ez_step(self.ez_step(ui));
     }
 
@@ -1783,6 +1889,13 @@ impl State {
         self.refresh_hub(ui);
     }
 
+    /// Step 5: pair the next device, from 5a.
+    pub fn ez_pair_another(&self, ui: &AppWindow) {
+        ui.set_hub_code(s(""));
+        ui.set_ez_sub(0);
+        self.hub_status();
+    }
+
     /// EZ Start is done (or skipped): the full Hub tab from now on.
     pub fn ez_finish(&mut self, ui: &AppWindow) {
         self.cfg.ez_done = true;
@@ -1849,23 +1962,55 @@ impl State {
             .max()
             .unwrap_or(0)
             + 1;
-        let start = self.today.with_day(1).unwrap_or(self.today);
+        let (schedule, start) = match agreement_schedule(
+            ui.get_new_agreement_how(),
+            ui.get_new_agreement_day().trim(),
+            ui.get_new_agreement_weekday(),
+            ui.get_new_agreement_start().trim(),
+            self.today,
+        ) {
+            Ok(x) => x,
+            Err(e) => return ui.set_hub_error(s(e)),
+        };
         let members: serde_json::Map<String, Value> = self
             .hub_pick
             .iter()
             .map(|m| (m.0.to_string(), json!(start)))
             .collect();
+        let people: Vec<MemberId> = self.hub_pick.iter().copied().collect();
+        let equal = ui.get_new_agreement_split() == 0;
         self.hub_pick.clear();
         ui.set_new_agreement_name(s(""));
+        ui.set_new_agreement_start(s(""));
         self.hub_record(
             ui,
             "agreement-add",
-            json!({
-                "id": id, "name": name, "members": members,
-                "schedule": {"Monthly": {"start": start, "day": {"Day": 1}, "every": 1}},
-            }),
+            json!({"id": id, "name": name, "members": members, "schedule": schedule}),
             &format!("{name} was created."),
         );
+        // the first rule, everyone the same, in the name of the first person picked; the
+        // others approve it on their devices
+        if equal {
+            if let Some(by) = people.first() {
+                let client_id = self.client_id();
+                if let Some(book) = self.hub_book.clone() {
+                    self.admin(
+                        "POST",
+                        format!("/admin/v1/books/{book}/records"),
+                        Some(json!({
+                            "client_id": client_id,
+                            "kind": "rule-proposal",
+                            "member": by,
+                            "body": {
+                                "agreement": id, "rule_id": 1, "effective": start,
+                                "rule": {"name": "Shared equally", "method": "Equal", "members": people},
+                            },
+                        })),
+                        AdminThen::Done(String::new()),
+                    );
+                }
+            }
+        }
     }
 
     pub fn hub_make_code(&self, ui: &AppWindow, member: i32) {

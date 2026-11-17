@@ -137,13 +137,33 @@ fn main() {
     st.hub_member_picked(&ui, 2);
     ui.set_new_agreement_name("Apartment".into());
     st.refresh(&ui);
-    shot(&win, w, h, &p("05-ez4-agreement"));
+    shot(&win, w, h * 2, &p("05-ez4-agreement"));
     st.hub_ledger = saved;
     st.ez_next(&ui);
     ui.set_hub_code("K7QM-2XRP".into());
     ui.set_hub_code_detail("Works once, for 10 minutes.".into());
     ui.set_hub_qr(qr_image("http://192.168.1.20:15080/?pair=K7QM2XRP"));
-    shot(&win, w, h, &p("05-ez5-pair"));
+    ui.set_hub_own_fingerprint("3F2A 91C4 0B7E 55D1 A8F0 6C2B 19E4 D7A3".into());
+    ui.set_hub_cert_page("http://192.168.1.20:15080/".into());
+    ui.set_hub_devices(ModelRc::new(VecModel::from(vec![DeviceS {
+        id: 1,
+        name: "Sam's phone".into(),
+        detail: "Sam".into(),
+        revoked: false,
+    }])));
+    for (i, part) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+        ui.set_ez_sub(i as i32);
+        shot(&win, w, h + 120, &p(&format!("05-ez5{part}")));
+        if i == 2 {
+            shot(&win, w, h * 2, &p("05-ez5c-tall"));
+        }
+        if i == 2 {
+            ui.set_ez_phone(1);
+            shot(&win, w, h + 120, &p("05-ez5c-android"));
+            ui.set_ez_phone(0);
+        }
+    }
+    ui.set_ez_sub(0);
     ui.set_hub_code("".into());
 
     ui.set_page(1);

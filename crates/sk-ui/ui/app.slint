@@ -197,6 +197,47 @@ component EzStep inherits VerticalLayout {
     if root.can-back: LinkButton { text: "‹ Back to step " + (root.number - 1); fg: Theme.muted; clicked => { root.back(); } }
 }
 
+// A new agreement's options: how often it settles up, from when, and how expenses split at
+// first. Used by EZ Start (step 4) and the Hub tab.
+component AgreementOptions inherits VerticalLayout {
+    in-out property <int> how: 2;
+    in-out property <string> day: "1";
+    in-out property <int> weekday: 4;
+    in-out property <string> start;
+    in-out property <int> split: 0;
+    in property <string> start-hint;
+    spacing: 8px;
+    FieldLabel { text: "Settle up"; }
+    // scrolls sideways on a narrow window, like the other chip rows
+    ChipStrip {
+        chips: [
+            { id: 0, label: "Weekly", on: root.how == 0 },
+            { id: 1, label: "Every 2 weeks", on: root.how == 1 },
+            { id: 2, label: "Monthly", on: root.how == 2 },
+            { id: 3, label: "Every N days", on: root.how == 3 },
+        ];
+        picked(id) => { root.how = id; }
+    }
+    if root.how == 2: Field { label: "Day of the month (1–28, or 31 for the last day)"; number: true; text <=> root.day; }
+    if root.how == 3: Field { label: "Every how many days (1–365)"; number: true; text <=> root.day; }
+    if root.how <= 1: FieldLabel { text: "On"; }
+    if root.how <= 1: HorizontalLayout {
+        spacing: 4px;
+        alignment: LayoutAlignment.start;
+        for w[i] in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]: Chip { text: w; on: root.weekday == i; clicked => { root.weekday = i; } }
+    }
+    Field { label: "First period starts (YYYY-MM-DD)"; placeholder: root.start-hint; text <=> root.start; }
+    Hint { text: "Leave it empty to start with the period you're in now (" + root.start-hint + "). A start between settle-up days makes a short first period."; }
+    FieldLabel { text: "Split expenses"; }
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: LayoutAlignment.start;
+        Chip { text: "Equally"; on: root.split == 0; clicked => { root.split = 0; } }
+        Chip { text: "Set it up later"; on: root.split == 1; clicked => { root.split = 1; } }
+    }
+    Hint { text: root.split == 0 ? "A first rule, everyone the same, is proposed in the name of the first person picked; the others approve it on their devices. Other ways to split (percentages, shares, by income, by room…) are proposed later from the agreement's Rules tab." : "Expenses can't be added until someone proposes a rule from the agreement's Rules tab and everyone approves it."; }
+}
+
 component SplitList inherits VerticalLayout {
     in property <[SplitS]> rows;
     spacing: 4px;
@@ -365,6 +406,12 @@ export component AppWindow inherits Window {
     in-out property <string> new-book-password;
     in-out property <string> new-member-name;
     in-out property <string> new-agreement-name;
+    in-out property <int> new-agreement-how: 2;
+    in-out property <string> new-agreement-day: "1";
+    in-out property <int> new-agreement-weekday: 4;
+    in-out property <string> new-agreement-start;
+    in-out property <int> new-agreement-split: 0;
+    in property <string> new-agreement-start-hint;
     in-out property <string> unlock-password;
 
     // ----- what the person does -----
@@ -415,6 +462,15 @@ export component AppWindow inherits Window {
     callback hub-unlock(string);
     callback hub-close-book();
     in property <bool> ez-has-agreement;
+    // EZ Start step 5's parts (5a–5f) and the phone's certificate steps
+    in-out property <int> ez-sub;
+    in-out property <int> ez-phone;
+    in property <string> ez-apple-steps;
+    in property <string> ez-android-steps;
+    in property <string> hub-own-fingerprint;
+    in property <string> hub-cert-page;
+    callback hub-refresh();
+    callback ez-pair-another();
     callback ez-back();
     callback ez-next();
     callback ez-finish();
@@ -546,29 +602,61 @@ export component AppWindow inherits Window {
                 if root.ez-step == 4: EzStep {
                     number: 4; total: 5;
                     title: "Create your first agreement";
-                    purpose: "An agreement is something you share and settle up together (the apartment, a car). It sets who's in and when you settle up: monthly, on the 1st.";
+                    purpose: "An agreement is something you share and settle up together (the apartment, a car). It sets who's in, how often you settle up, and how expenses split.";
                     back => { root.ez-back(); }
                     Field { label: "Agreement name"; placeholder: "Apartment"; text <=> root.new-agreement-name; }
                     Hint { text: "Who shares in it:"; }
                     ChipStrip { chips: root.hub-agreement-members; picked(id) => { root.hub-member-picked(id); } }
+                    AgreementOptions { how <=> root.new-agreement-how; day <=> root.new-agreement-day; weekday <=> root.new-agreement-weekday; start <=> root.new-agreement-start; split <=> root.new-agreement-split; start-hint: root.new-agreement-start-hint; }
                     BigButton { text: "Create the agreement"; enabled: root.new-agreement-name != "" && root.hub-pick-count > 0; clicked => { root.hub-new-agreement(); } }
                     if root.ez-has-agreement: BigButton { text: "Next: the agreements are made"; primary: false; clicked => { root.ez-next(); } }
                 }
+                // step 5 walks through the phone's side too, one part at a time (5a–5f), so the
+                // person doing it reads here and acts on the phone
                 if root.ez-step == 5: EzStep {
                     number: 5; total: 5;
                     title: "Pair the first device";
                     purpose: "Each person's phone or computer joins once. After that it syncs with this hub on its own whenever it's on the home Wi-Fi.";
+                    can-back: root.ez-sub == 0;
                     back => { root.ez-back(); }
-                    Hint { text: "Tap whose device it is. A phone scans the QR code (it installs the hub's certificate, then joins); a computer runs ShareKeep and types the code."; }
-                    ChipStrip { chips: root.hub-members; picked(id) => { root.hub-make-code(id); } }
-                    if root.hub-code != "": VerticalLayout {
+                    Text { text: "Step 5" + ["a", "b", "c", "d", "e", "f"][root.ez-sub] + " of 5f: " + ["Choose whose device", "Scan the code with the phone", "Install the certificate on the phone", "Open the household page", "Join from the phone", "Check that it joined"][root.ez-sub]; font-size: 17px; font-weight: 700; color: Theme.accent-dark; wrap: word-wrap; }
+                    if root.ez-sub == 0: Hint { text: "Tap whose phone or computer it is. A pairing code and its QR code appear; they work once, for 10 minutes."; }
+                    if root.ez-sub == 0: ChipStrip { chips: root.hub-members; picked(id) => { root.hub-make-code(id); } }
+                    if root.ez-sub == 0 && (root.hub-code != ""): Text { text: "Pairing code " + root.hub-code; font-weight: 600; color: Theme.ink; }
+                    if root.ez-sub == 0 && (root.hub-code != ""): Hint { text: "A computer instead of a phone? On it, open ShareKeep, follow Join (find the hub at this computer's address), and type this code and the PIN. Then go to 5f."; }
+                    if root.ez-sub == 0: BigButton { text: "Next: scan it with the phone"; enabled: root.hub-code != ""; clicked => { root.ez-sub = 1; } }
+                    if root.ez-sub == 1: Hint { text: "On the phone, open the Camera and point it at this code. Tap the link that appears. It opens the hub's certificate page in the phone's browser (on an iPhone, Safari)."; }
+                    if root.ez-sub == 1: Image { source: root.hub-qr; width: 200px; height: 200px; image-rendering: pixelated; horizontal-alignment: center; }
+                    if root.ez-sub == 1: Text { text: root.hub-code; font-size: 24px; font-weight: 700; color: Theme.ink; horizontal-alignment: center; }
+                    if root.ez-sub == 1: Hint { text: "The page is titled “ShareKeep household hub”. No camera link? Type " + root.hub-cert-page + " into the phone's browser."; }
+                    if root.ez-sub == 1: BigButton { text: "Next: the page is open"; clicked => { root.ez-sub = 2; } }
+                    if root.ez-sub == 2: Hint { text: "The certificate lets the phone open ShareKeep securely. Which phone is it?"; }
+                    if root.ez-sub == 2: HorizontalLayout {
                         spacing: 8px;
-                        alignment: center;
-                        Image { source: root.hub-qr; width: 200px; height: 200px; image-rendering: pixelated; horizontal-alignment: center; }
-                        Text { text: root.hub-code; font-size: 28px; font-weight: 700; color: Theme.ink; horizontal-alignment: center; }
-                        Hint { text: root.hub-code-detail; horizontal-alignment: center; }
+                        alignment: start;
+                        Chip { text: "iPhone or iPad"; on: root.ez-phone == 0; clicked => { root.ez-phone = 0; } }
+                        Chip { text: "Android"; on: root.ez-phone == 1; clicked => { root.ez-phone = 1; } }
                     }
-                    BigButton { text: "Finish"; clicked => { root.ez-finish(); } }
+                    // the numbered list as one wrapped text: Slint measures a repeated wrapped
+                    // line too short, and the page then overlaps
+                    if root.ez-sub == 2: Text { text: root.ez-phone == 0 ? root.ez-apple-steps : root.ez-android-steps; color: Theme.ink; wrap: word-wrap; }
+                    if root.ez-sub == 2: Text { text: "The fingerprint here, to compare:"; color: Theme.muted; }
+                    if root.ez-sub == 2: Text { text: root.hub-own-fingerprint; font-family: "monospace"; font-weight: 600; color: Theme.ink; wrap: word-wrap; }
+                    if root.ez-sub == 2: Hint { text: "If they don't match, stop: the phone isn't talking to this computer."; }
+                    if root.ez-sub == 2: BigButton { text: "Next: the certificate is installed"; clicked => { root.ez-sub = 3; } }
+                    if root.ez-sub == 3: Hint { text: "Go back to the browser on the phone, to the certificate page. Under “Step 2: join the household”, tap Open ShareKeep."; }
+                    if root.ez-sub == 3: Hint { text: "The household page opens at “Step 2 of 3: Enter the household PIN”. (If the browser warns that the connection isn't private, the certificate isn't trusted yet: go back to 5c.)"; }
+                    if root.ez-sub == 3: BigButton { text: "Next: the household page is open"; clicked => { root.ez-sub = 4; } }
+                    if root.ez-sub == 4: Text { text: "1.  Type the household PIN (the one from step 1), then tap Next.\n\n2.  Name the device, like Sam's phone, so the household can tell devices apart.\n\n3.  Only if the household keeps a checkpoint of a Hyperbook: tap “I have a checkpoint” and paste or type it.\n\n4.  Tap Join the household. The household's agreements appear on the phone."; color: Theme.ink; wrap: word-wrap; }
+                    if root.ez-sub == 4: Hint { text: "To keep ShareKeep on the phone's home screen: on an iPhone, Share > Add to Home Screen; on Android, the browser's menu > Install app."; }
+                    if root.ez-sub == 4: BigButton { text: "Next: check it joined"; clicked => { root.ez-sub = 5; root.hub-refresh(); } }
+                    if root.ez-sub == 5: Hint { text: "The device appears here once it has joined:"; }
+                    for d in (root.ez-sub == 5 ? root.hub-devices : []): Text { text: (d.revoked ? "– " : "✓ ") + d.name + " · " + d.detail; color: d.revoked ? Theme.muted : Theme.ink; }
+                    if root.ez-sub == 5 && (root.hub-devices.length == 0): Text { text: "No device has joined yet."; color: Theme.amber; }
+                    if root.ez-sub == 5: LinkButton { text: "Check again"; clicked => { root.hub-refresh(); } }
+                    if root.ez-sub == 5: BigButton { text: "Pair another device"; primary: false; clicked => { root.ez-pair-another(); } }
+                    if root.ez-sub == 5: BigButton { text: "Finish"; clicked => { root.ez-finish(); } }
+                    if root.ez-sub > 0: LinkButton { text: "‹ Back to step 5" + ["a", "b", "c", "d", "e", "f"][root.ez-sub - 1]; fg: Theme.muted; clicked => { root.ez-sub -= 1; } }
                 }
                 LinkButton { text: "Skip EZ Start: show everything on the Hub tab"; fg: Theme.muted; clicked => { root.ez-finish(); } }
             }
@@ -877,7 +965,8 @@ export component AppWindow inherits Window {
                     if root.hub-agreement-members.length == 0: Hint { text: "Add people first."; }
                     if root.hub-agreement-members.length > 0: Hint { text: "Who shares in it:"; }
                     ChipStrip { chips: root.hub-agreement-members; picked(id) => { root.hub-member-picked(id); } }
-                    BigButton { text: "Create the agreement (settles monthly, on the 1st)"; primary: false; enabled: root.new-agreement-name != "" && root.hub-pick-count > 0; clicked => { root.hub-new-agreement(); } }
+                    if root.hub-agreement-members.length > 0: AgreementOptions { how <=> root.new-agreement-how; day <=> root.new-agreement-day; weekday <=> root.new-agreement-weekday; start <=> root.new-agreement-start; split <=> root.new-agreement-split; start-hint: root.new-agreement-start-hint; }
+                    BigButton { text: "Create the agreement"; primary: false; enabled: root.new-agreement-name != "" && root.hub-pick-count > 0; clicked => { root.hub-new-agreement(); } }
                 }
                 if root.rec-file != "": Card {
                     stripe: Theme.red;

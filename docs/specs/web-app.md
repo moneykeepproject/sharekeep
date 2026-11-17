@@ -53,6 +53,11 @@ a payment made offline and sent later, exact and itemized rules, an itemized rec
 first checkpoint offered after pairing, Verify, checking a kept and a changed checkpoint, and
 a period's CSV); it needs Python's playwright and is not part of CI.
 
+## The certificate page
+
+The hub's certificate page (`http://<address>:15080/`) shows the iPhone and Android steps from
+`sk_view::phone`, the same copy the desktop's EZ Start step 5c shows.
+
 ## Hyperbook
 
 - The app remembers the last head it saw (`seen`). Each sync asks the hub for that record;

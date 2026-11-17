@@ -3,6 +3,7 @@
 //! app.
 
 pub mod demo;
+pub mod phone;
 pub mod view;
 
 /// A name made safe to use in a file name.

@@ -225,3 +225,111 @@ fn addresses_are_read_forgivingly() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn a_book_with_spaces_in_its_name_closes_and_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("hub");
+    let mut cfg = HubConfig::new(Ipv4Addr::LOCALHOST, None);
+    cfg.https_port = 0;
+    cfg.helper_port = 0;
+    cfg.admin_port = 0;
+    let keys = KeyStore::files(data.clone());
+    sk_hub::setup(&data, &cfg, &keys, "test-pc", sk_hub::util::now_ms()).unwrap();
+    let running = sk_hub::start(HubOptions {
+        data: data.clone(),
+        keys,
+        clock: Arc::new(sk_hub::util::now_ms),
+        log: Arc::new(|_| {}),
+        pin_cost: pin::Cost { m: 64, t: 1, p: 1 },
+        kdf: KdfParams::TEST,
+    })
+    .unwrap();
+    let token = sk_hub::admin_token(&data).unwrap();
+    let admin =
+        |m: &str, p: &str, b: Option<serde_json::Value>| admin_call(running.admin, &token, m, p, b);
+    let made = admin(
+        "POST",
+        "/admin/v1/books",
+        Some(json!({"name": "Jerry's Home (2026)"})),
+    )
+    .unwrap();
+    let file = made["file"].as_str().unwrap().to_string();
+    assert!(file.contains(' '), "{file}");
+    // the calls the Hub tab makes, with the file name as it is
+    admin("POST", &format!("/admin/v1/books/{file}/close"), None)
+        .unwrap_or_else(|e| panic!("close: {e}"));
+    let status = admin("GET", "/admin/v1/status", None).unwrap();
+    assert!(status["books"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|b| b["open"] != true));
+    admin(
+        "POST",
+        &format!("/admin/v1/books/{file}/unlock"),
+        Some(json!({})),
+    )
+    .unwrap_or_else(|e| panic!("open: {e}"));
+    let status = admin("GET", "/admin/v1/status", None).unwrap();
+    assert!(status["books"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b["open"] == true && b["file"] == file.as_str()));
+
+    // an agreement made with the options, and its first rule in the first person's name
+    let id = made["book"]["id"].as_str().unwrap().to_string();
+    let records = format!("/admin/v1/books/{id}/records");
+    for (n, name) in [(1, "Jerry"), (2, "Sam")] {
+        admin(
+            "POST",
+            &records,
+            Some(json!({"client_id": format!("m{n}"), "kind": "member-add", "body": {"id": n, "name": name}})),
+        )
+        .unwrap();
+    }
+    let today = chrono::Utc::now().date_naive();
+    let (schedule, start) =
+        sharekeep_app::controller::agreement_schedule(1, "", 4, "", today).unwrap();
+    admin(
+        "POST",
+        &records,
+        Some(json!({"client_id": "a1", "kind": "agreement-add", "body": {
+            "id": 1, "name": "Apartment", "members": {"1": start, "2": start}, "schedule": schedule}})),
+    )
+    .unwrap_or_else(|e| panic!("agreement: {e}"));
+    admin(
+        "POST",
+        &records,
+        Some(
+            json!({"client_id": "r1", "kind": "rule-proposal", "member": 1, "body": {
+            "agreement": 1, "rule_id": 1, "effective": start,
+            "rule": {"name": "Shared equally", "method": "Equal", "members": [1, 2]}}}),
+        ),
+    )
+    .unwrap_or_else(|e| panic!("first rule: {e}"));
+    let all = admin("GET", &records, None).unwrap();
+    let recs: Vec<sk_chain::Record> = serde_json::from_value(all["records"].clone()).unwrap();
+    let (l, skipped) = Ledger::replay(&recs);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    // Sam approves it on his device
+    assert_eq!(l.waiting_for(MemberId(2)).len(), 1);
+    running.stop();
+}
+
+#[test]
+fn paths_are_escaped_for_the_request_line() {
+    assert_eq!(
+        sharekeep_app::worker::escape_path("/admin/v1/books/Jerry's Home (2).sharekeep/close"),
+        "/admin/v1/books/Jerry%27s%20Home%20%282%29.sharekeep/close"
+    );
+    assert_eq!(
+        sharekeep_app::worker::escape_path("/admin/v1/x?from=1&limit=2"),
+        "/admin/v1/x?from=1&limit=2"
+    );
+    assert_eq!(
+        sharekeep_app::worker::escape_path("/b/Café"),
+        "/b/Caf%C3%A9"
+    );
+}

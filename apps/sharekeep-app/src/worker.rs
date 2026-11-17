@@ -425,6 +425,30 @@ impl Worker {
 }
 
 /// A call to the hub's loopback admin port.
+/// A path with every byte that can't appear as-is in a request line escaped: a book's file
+/// name can have spaces ("Our Home.sharekeep"), which would otherwise break the request (the
+/// hub answered 400). Slashes and the query's `?`, `=` and `&` are kept.
+pub fn escape_path(path: &str) -> String {
+    let mut out = String::new();
+    for b in path.bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'/'
+            | b'?'
+            | b'='
+            | b'&' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 pub fn admin_call(
     addr: SocketAddr,
     token: &str,
@@ -432,6 +456,7 @@ pub fn admin_call(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value, String> {
+    let path = &escape_path(path);
     let auth = format!("Bearer {token}");
     let bytes = body.map(|b| b.to_string().into_bytes());
     let mut headers = vec![

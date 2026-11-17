@@ -569,28 +569,19 @@ pub fn is_apple(user_agent: &str) -> bool {
         .any(|k| user_agent.contains(k))
 }
 
-/// The Android steps on the certificate page.
-pub const ANDROID_STEPS: [&str; 6] = [
-    "Tap <b>Download certificate (Android)</b> above. If Chrome asks, keep the file.",
-    "Open <b>Settings</b> &gt; <b>Security</b> (or <b>Security &amp; privacy</b>) &gt; <b>More security settings</b> &gt; <b>Encryption &amp; credentials</b>. The words differ a little between phone makers; searching Settings for “certificate” also finds it.",
-    "Tap <b>Install a certificate</b> &gt; <b>CA certificate</b>, then <b>Install anyway</b>.",
-    "Choose the downloaded file <b>sharekeep-ca.crt</b> (in Downloads). The phone may ask for its screen lock.",
-    "Check under <b>Trusted credentials</b> &gt; <b>User</b> that “ShareKeep Hub CA” is listed.",
-    "Then scan the pairing QR code on the hub computer (ShareKeep > Settings > Devices > Pair a device).",
-];
-
-/// The iPhone/iPad steps on the certificate page.
-pub const APPLE_STEPS: [&str; 6] = [
-    "Open this page in <b>Safari</b> (the Camera app opens Safari).",
-    "Tap <b>Download certificate (iPhone or iPad)</b> above, then <b>Allow</b>.",
-    "Open <b>Settings</b>: tap <b>Profile Downloaded</b> near the top (or <b>General</b> &gt; <b>VPN &amp; Device Management</b>), then <b>Install</b>, and enter the phone's passcode.",
-    "Open <b>Settings</b> &gt; <b>General</b> &gt; <b>About</b> &gt; <b>Certificate Trust Settings</b> and turn on full trust for “ShareKeep Hub CA”.",
-    "Compare the fingerprint below with the one ShareKeep shows on the hub computer.",
-    "Then scan the pairing QR code on the hub computer to pair this device.",
-];
-
-fn steps(title: &str, list: &[&str]) -> String {
-    let items: String = list.iter().map(|s| format!("<li>{s}</li>")).collect();
+/// The certificate page's steps for a phone: the shared copy in `sk_view::phone` (the desktop's
+/// EZ Start shows the same), and how to go on.
+fn steps(title: &str, list: &[&str], pairing: bool) -> String {
+    let mut items: String = list
+        .iter()
+        .map(|s| format!("<li>{}</li>", sk_view::phone::html(s)))
+        .collect();
+    if !pairing {
+        items.push_str(&format!(
+            "<li>{}</li>",
+            sk_view::phone::html(sk_view::phone::THEN_PAIR)
+        ));
+    }
     format!("<section><h2>{title}</h2><ol>{items}</ol></section>")
 }
 
@@ -611,8 +602,12 @@ pub fn install_page(info: &Info, apple_first: bool, pair: Option<&str>) -> Strin
             )
         })
         .unwrap_or_default();
-    let android = steps("Android phone or tablet", &ANDROID_STEPS);
-    let apple = steps("iPhone or iPad", &APPLE_STEPS);
+    let android = steps(
+        "Android phone or tablet",
+        &sk_view::phone::ANDROID,
+        pair.is_some(),
+    );
+    let apple = steps("iPhone or iPad", &sk_view::phone::APPLE, pair.is_some());
     let (first, second) = if apple_first {
         (apple, android)
     } else {

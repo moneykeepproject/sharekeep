@@ -76,6 +76,22 @@ that's already done shows what was done ("✓ The PIN is set", "✓ Working in H
 to keep it, or the way to change it (a new PIN; close the book to create another). Next never
 goes past where setup stands.
 
+Step 4 (and the Hub tab's new agreement) has the agreement's options: settle up weekly, every 2
+weeks, monthly (a day 1–28, or 31 for the last day) or every N days; when the first period starts
+(empty: the start of the period today is in, `controller::agreement_schedule`); and whether
+expenses split equally from the start (a first rule, "Shared equally", proposed in the name of
+the first person picked, for the others to approve) or a rule is set up later.
+
+Step 5 walks through the phone's side too, one part at a time, so the person doing it reads at
+the computer and acts on the phone: 5a whose device (code and QR code), 5b scan the code with the
+phone's camera, 5c install the certificate (iPhone or Android steps, from the same copy as the
+phone's certificate page, `sk_view::phone`, and the fingerprint to compare), 5d open the
+household page, 5e join from the phone (PIN, device name, optional checkpoint), 5f check that it
+joined (the devices list), then pair another device or finish.
+
+Calls to the hub computer's port escape the path (`worker::escape_path`): a book's file name can
+have spaces, which otherwise broke the request (the hub answered 400).
+
 - **Joining** (a device that isn't paired; desktop and web app): 1 Find your household's hub
   (address), 2 Check it's really your hub (fingerprint: "They match" / "They don't match"),
   3 Pair this device (code, PIN, name). The web app's steps are 1 pairing code, 2 household
