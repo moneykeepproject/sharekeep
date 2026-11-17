@@ -127,3 +127,10 @@ reading, or the receipt's lines and who shares each (tax and tip, the amount min
 follow the lines): the hub's preview answers `needs` with kind `days`, `usage` or `items`.
 Both apps create deposits and pots, pay-ins, refunds, buy-outs and deductions, recurring
 bills, special events, schedule changes, joining and leaving.
+
+## Attachments
+
+`attachment {target, sha256, name, mime, size, remove}`: anyone in the agreement adds a picture
+or PDF to an expense, or takes one off, at any time (closed periods included: no money moves).
+At most 5 per expense; JPEG, PNG, WebP or PDF; at most 10 MB; not on a deleted expense or a
+payment. An edit keeps them. Book version 4.

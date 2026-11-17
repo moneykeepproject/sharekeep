@@ -147,8 +147,15 @@ async function flush() {
   while (S.outbox.length) {
     const item = S.outbox[0];
     try {
-      await api('POST', '/api/v1/records', item);
+      const rec = await api('POST', '/api/v1/records', { client_id: item.client_id, kind: item.kind, body: item.body });
       S.outbox.shift();
+      // pictures already on the hub, for the expense just recorded: attach them next
+      if (item.attach && item.attach.length && rec && rec.seq) {
+        S.outbox.unshift(...item.attach.map((f, i) => ({
+          client_id: item.client_id + '-f' + i, kind: 'attachment',
+          body: { target: rec.seq, sha256: f.sha256, name: f.name, mime: f.mime, size: f.size },
+        })));
+      }
     } catch (e) {
       if (retryable(e)) { saveQueue(); throw e; }
       S.outbox.shift();
@@ -254,10 +261,11 @@ function blocked() {
   return false;
 }
 
-/** Queue something that may wait offline (expense, payment, approval), then send it. */
-function queue(kind, body) {
+/** Queue something that may wait offline (expense, payment, approval), then send it. `attach`:
+ *  files already sent to the hub, attached once the expense is recorded. */
+function queue(kind, body, attach) {
   if (blocked()) return Promise.resolve();
-  S.outbox.push({ client_id: randomId(), kind, body });
+  S.outbox.push(attach && attach.length ? { client_id: randomId(), kind, body, attach } : { client_id: randomId(), kind, body });
   saveQueue();
   return sync();
 }
@@ -571,7 +579,10 @@ function agreementPage(a) {
       h('div', { class: 'row' },
         h('div', { class: 'grow' }, h('div', { class: 'v' }, e.title), h('p', { class: 'hint' }, e.date + ' · ' + e.detail + (e.disputed ? ' · disputed' : ''))),
         h('strong', {}, e.amount)),
+      attachmentRow(e),
+      !e.editable && e.can_attach ? h('div', { class: 'row end' }, attachLink(e)) : null,
       e.editable ? h('div', { class: 'row end' },
+        attachLink(e),
         e.expense ? h('button', { class: 'link', onclick: () => expenseSheet(a, null, e) }, 'Edit') : null,
         h('button', { class: 'link amber', onclick: () => sendNow('dispute', { target: e.seq, resolved: e.disputed }) }, e.disputed ? 'Resolve' : 'Dispute'),
         h('button', { class: 'link red', onclick: () => { if (confirmDelete(e)) sendNow('entry-delete', { target: e.seq }); } }, 'Delete')) : null)),
@@ -894,6 +905,159 @@ function chipRow(people, chosen, pick) {
   return h('div', { class: 'chips' }, people.map((p) => h('button', { class: 'chip' + (p.id === chosen ? ' on' : ''), onclick: () => pick(p.id) }, p.name)));
 }
 
+// ----- pictures and PDFs on expenses -----------------------------------------------------------
+
+const PHOTO_EDGE = 1600;
+const ATTACH_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+
+/** A photo shrunk to at most 1600 px on its long side (a JPEG of a few hundred KB); a PDF, or a
+ *  picture already small, as it is. */
+async function prepareFile(file) {
+  if (file.type === 'application/pdf') {
+    if (file.size > 10 * 1024 * 1024) throw new Error('A PDF can be at most 10 MB.');
+    return file;
+  }
+  if (!/^image\//.test(file.type)) throw new Error('Only pictures and PDFs can be attached.');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, bad) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = () => bad(new Error("That picture can't be read on this device."));
+      i.src = url;
+    });
+    const w = img.naturalWidth, hgt = img.naturalHeight;
+    const scale = Math.min(1, PHOTO_EDGE / Math.max(w, hgt));
+    if (scale === 1 && file.size <= 600 * 1024 && ATTACH_TYPES.includes(file.type)) return file;
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * scale);
+    c.height = Math.round(hgt * scale);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise((ok) => c.toBlob(ok, 'image/jpeg', 0.82));
+    if (!blob) throw new Error("That picture can't be read on this device.");
+    const base = (file.name || 'photo').replace(/\.[^.]*$/, '') || 'photo';
+    return new File([blob], base + '.jpg', { type: 'image/jpeg' });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Send a file to the hub; the answer describes it for an `attachment` record. */
+async function uploadFile(file) {
+  let r;
+  try {
+    r = await fetch('/api/v1/files', {
+      method: 'POST', cache: 'no-store',
+      headers: { Accept: 'application/json', Authorization: 'Bearer ' + S.token, 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    });
+  } catch {
+    throw new HubError("Pictures need the hub, and it can't be reached. Attach them once you're home.", 0);
+  }
+  let data = {};
+  try { data = await r.json(); } catch { /* not JSON */ }
+  if (!r.ok) throw new HubError(data.error || 'The hub answered ' + r.status + '.', r.status);
+  return { sha256: data.sha256, mime: data.mime, size: data.size, name: file.name || 'file' };
+}
+
+/** Ask for pictures or PDFs (on a phone: the camera or the photo library), shrink and send them. */
+function pickFiles(room, done) {
+  const input = h('input', { type: 'file', accept: 'image/*,application/pdf', multiple: true, hidden: true });
+  input.onchange = async () => {
+    const files = Array.from(input.files || []).slice(0, room);
+    input.remove();
+    if (!files.length) return;
+    const sent = [];
+    toast(files.length === 1 ? 'Sending the file…' : 'Sending ' + files.length + ' files…');
+    for (const f of files) {
+      try {
+        sent.push(await uploadFile(await prepareFile(f)));
+      } catch (e) {
+        toast(e.message);
+        break;
+      }
+    }
+    if (sent.length) {
+      if (sent.length === files.length) toast(sent.length === 1 ? 'Sent.' : 'All ' + sent.length + ' sent.');
+      done(sent);
+    }
+  };
+  document.body.append(input);
+  input.click();
+}
+
+/** Attach files to an expense already recorded. */
+function attachTo(seq, room) {
+  pickFiles(room, async (sent) => {
+    for (const f of sent) {
+      if (!await sendNow('attachment', { target: seq, sha256: f.sha256, name: f.name, mime: f.mime, size: f.size })) return;
+    }
+    toast(sent.length === 1 ? 'Attached.' : sent.length + ' files attached.');
+  });
+}
+
+/** A file from the hub, checked against the fingerprint the book holds. */
+async function fetchFile(f) {
+  let r;
+  try {
+    r = await fetch('/api/v1/files/' + f.sha256, { headers: { Authorization: 'Bearer ' + S.token } });
+  } catch {
+    throw new HubError("The household hub can't be reached.", 0);
+  }
+  if (!r.ok) throw new HubError(r.status === 404 ? "The hub doesn't have this file." : 'The hub answered ' + r.status + '.', r.status);
+  const buf = await r.arrayBuffer();
+  let same = null;
+  if (window.crypto && crypto.subtle) {
+    const d = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+    same = Array.from(d, (b) => b.toString(16).padStart(2, '0')).join('') === f.sha256;
+  }
+  return { blob: new Blob([buf], { type: f.mime }), same };
+}
+
+function fileSheet(entry, f) {
+  openSheet(f.name, async (body, close) => {
+    body.append(h('p', { class: 'hint' }, f.size + ' · attached by ' + f.by));
+    const spot = h('div', {}, h('p', { class: 'hint' }, 'Loading…'));
+    body.append(spot);
+    let url = null;
+    try {
+      const got = await fetchFile(f);
+      url = URL.createObjectURL(got.blob);
+      const shown = f.picture ? h('img', { class: 'attached', src: url, alt: f.name }) : h('p', {}, 'A PDF.');
+      spot.replaceChildren(...[
+        got.same === false ? h('div', { class: 'banner warn' }, "Warning: this file isn't the one that was attached (its fingerprint doesn't match the book). Ask the household what happened.") : null,
+        shown,
+        h('div', { class: 'row' },
+          h('a', { class: 'btn secondary', href: url, target: '_blank', rel: 'noopener' }, 'Open'),
+          h('a', { class: 'btn secondary', href: url, download: f.name }, 'Save'))].filter((x) => x));
+    } catch (e) {
+      spot.replaceChildren(h('p', { class: 'error' }, e.message));
+    }
+    body.append(h('div', { class: 'row end' }, h('button', { class: 'link red', onclick: async () => {
+      if (S.armed !== 'detach') { S.armed = 'detach'; toast('Tap again to take this file off the expense.'); return; }
+      S.armed = null;
+      if (await sendNow('attachment', { target: entry.seq, sha256: f.sha256, remove: true })) {
+        close();
+        if (url) setTimeout(() => URL.revokeObjectURL(url), 30000);
+      }
+    } }, 'Take it off this expense')));
+  });
+}
+
+function attachmentRow(e) {
+  const files = e.attachments || [];
+  if (!files.length) return null;
+  return h('div', { class: 'files' },
+    files.map((f) => h('button', { class: 'chip file', onclick: () => fileSheet(e, f) }, (f.picture ? '🖼 ' : '📄 ') + f.name)));
+}
+
+function attachLink(e) {
+  return e.can_attach ? h('button', { class: 'link', onclick: () => attachTo(e.seq, 5 - (e.attachments || []).length) }, '+ Picture') : null;
+}
+
 function expenseSheet(a, due, editing) {
   const cur = S.view.currency;
   const e = { amount: '', category: '', date: S.view.today, note: '', payer: S.member, event: null, needs: null, values: {}, items: [] };
@@ -1011,12 +1175,21 @@ function expenseSheet(a, due, editing) {
         chipRow([{ id: null, name: 'Everyday' }, ...open.map((ev) => ({ id: ev.id, name: ev.name }))], e.event, (id) => { e.event = id; drawEvents(); check(); }));
     };
     drawEvents();
+    // pictures and PDFs for a new expense: sent to the hub now, attached once it's recorded
+    const picked = [];
+    const files = h('div', {});
+    const drawFiles = () => files.replaceChildren(
+      h('label', { class: 'field' }, 'Pictures and PDFs (optional)'),
+      h('div', { class: 'files' },
+        picked.map((f, i) => h('button', { class: 'chip file on', onclick: () => { picked.splice(i, 1); drawFiles(); } }, f.name + ' ✕')),
+        picked.length < 5 ? h('button', { class: 'link', onclick: () => pickFiles(5 - picked.length, (sent) => { picked.push(...sent); drawFiles(); }) }, '+ Picture or PDF') : null));
+    if (!editing) drawFiles();
     save.onclick = async () => {
       if (editing) {
         if (await sendNow('entry-edit', { target: editing.seq, expense: body_() })) close();
       } else {
         close();
-        queue('expense', body_());
+        queue('expense', body_(), picked);
       }
     };
     body.append(
@@ -1024,7 +1197,7 @@ function expenseSheet(a, due, editing) {
       field('Category', e.category, (v) => { e.category = v; check(); }, { placeholder: 'Groceries' }),
       field('Date', e.date, (v) => { e.date = v; drawEvents(); check(); }, { type: 'date' }),
       field('Note (optional)', e.note, (v) => { e.note = v; }),
-      h('label', { class: 'field' }, 'Paid by'), payers, events, needsBox,
+      h('label', { class: 'field' }, 'Paid by'), payers, events, needsBox, files,
       h('div', { class: 'card' }, h('h2', {}, 'How it divides'), preview, err),
       save);
     check();

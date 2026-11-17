@@ -81,3 +81,13 @@ Installing and running the hub as a Windows service and a macOS launchd daemon (
 data-folder permissions and the PowerShell lessons from MoneyKeep), keys sealed by the
 operating system (4d), and the web app the hub serves (4c). The agreement engine's checks
 and period close with seals arrived in 4a.
+
+## Attached files
+
+`POST /api/v1/files` (a paired device; body: the file, at most 10 MB; JPEG, PNG, WebP or PDF,
+told by its first bytes) keeps the file in `files/<book id>/<sha256>` in the hub's data folder
+and answers `{sha256, mime, size}`. `GET /api/v1/files/<sha256>` returns it. An `attachment`
+record is accepted only once the hub holds the file it names, with that size and kind. Files
+are never deleted (a removal is a record; the history still names the file). The desktop app
+keeps a file it opened in `<book folder>/files/` and opens it with the computer's own viewer
+(explorer.exe, open, xdg-open), after checking its SHA-256.

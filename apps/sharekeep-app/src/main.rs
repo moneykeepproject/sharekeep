@@ -187,6 +187,16 @@ fn wire(ui: &AppWindow) {
     on!(on_delete_entry, |st, _u, seq: i32| st.delete_entry(seq));
     on!(on_edit_entry, |st, u, seq: i32| st.edit_entry(u, seq));
     on!(on_dispute_entry, |st, _u, seq: i32| st.dispute_entry(seq));
+    on!(on_attach_file, |st, u, seq: i32| st.attach_file(u, seq));
+    on!(
+        on_open_file,
+        |st, _u, sha: slint::SharedString, name: slint::SharedString| st.open_file(&sha, &name)
+    );
+    on!(
+        on_detach_file,
+        |st, u, seq: i32, sha: slint::SharedString, name: slint::SharedString| st
+            .detach_file(u, seq, &sha, &name)
+    );
     on!(on_dismiss_refused, |st, _u| st.dismiss_refused());
     on!(on_record_due, |st, u, i: i32| st.record_due(u, i));
     on!(on_paid_due, |st, _u, i: i32| st.paid_due(i));

@@ -116,6 +116,55 @@ pub struct ActivityRow {
     pub editable: bool,
     /// An expense's record body, for editing it.
     pub expense: Option<Expense>,
+    /// Pictures and PDFs attached to it.
+    pub attachments: Vec<FileRow>,
+    /// Whether another file can be attached (an expense with room for one).
+    pub can_attach: bool,
+}
+
+/// A picture or PDF on an entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileRow {
+    pub sha256: String,
+    pub name: String,
+    pub mime: String,
+    /// "312 KB"
+    pub size: String,
+    /// Who attached it.
+    pub by: String,
+    pub picture: bool,
+}
+
+/// A file size for people: "840 bytes", "312 KB", "2.4 MB".
+pub fn size_text(n: u64) -> String {
+    if n < 1024 {
+        format!("{n} bytes")
+    } else if n < 1024 * 1024 {
+        format!("{} KB", n.div_ceil(1024))
+    } else {
+        format!(
+            "{}.{} MB",
+            n / (1024 * 1024),
+            (n % (1024 * 1024)) * 10 / (1024 * 1024)
+        )
+    }
+}
+
+fn file_rows(l: &Ledger, e: &sk_ledger::Entry) -> Vec<FileRow> {
+    e.attachments
+        .iter()
+        .map(|f| FileRow {
+            sha256: f.sha256.clone(),
+            name: f.name.clone(),
+            mime: f.mime.clone(),
+            size: size_text(f.size),
+            by: f
+                .by
+                .map(|m| name(l, m))
+                .unwrap_or_else(|| "the hub computer".into()),
+            picture: f.mime.starts_with("image/"),
+        })
+        .collect()
 }
 
 /// An agreement's entries, newest first.
@@ -164,6 +213,8 @@ pub fn activity(l: &Ledger, a: AgreementId, me: MemberId, cur: Currency) -> Vec<
                     disputed: e.disputed,
                     editable: !closed(e.date),
                     expense: Some(expense.clone()),
+                    attachments: file_rows(l, e),
+                    can_attach: e.attachments.len() < sk_ledger::ATTACH_MAX,
                 }
             }
             EntryKind::Payment(p) => ActivityRow {
@@ -175,6 +226,8 @@ pub fn activity(l: &Ledger, a: AgreementId, me: MemberId, cur: Currency) -> Vec<
                 disputed: e.disputed,
                 editable: false,
                 expense: None,
+                attachments: Vec::new(),
+                can_attach: false,
             },
         })
         .collect();

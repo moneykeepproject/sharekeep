@@ -95,6 +95,50 @@ pub struct Entry {
     pub deleted: bool,
     /// The record that last edited it.
     pub edited_by: Option<u64>,
+    /// Pictures and PDFs attached to it, oldest first.
+    #[serde(default)]
+    pub attachments: Vec<FileRef>,
+}
+
+/// A file attached to an entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRef {
+    pub sha256: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    /// The record that attached it, and who.
+    pub seq: u64,
+    pub by: Option<MemberId>,
+}
+
+/// The kinds of file that can be attached.
+pub const ATTACH_TYPES: &[&str] = &["image/jpeg", "image/png", "image/webp", "application/pdf"];
+/// The largest file that can be attached.
+pub const ATTACH_MAX_BYTES: u64 = 10 * 1024 * 1024;
+/// How many files one entry can carry.
+pub const ATTACH_MAX: usize = 5;
+
+/// What a file is, from its first bytes: one of [`ATTACH_TYPES`], or `None`.
+pub fn sniff_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if bytes.starts_with(b"%PDF-") {
+        Some("application/pdf")
+    } else {
+        None
+    }
+}
+
+/// Whether `s` is a lower-case hex SHA-256.
+pub fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 impl Entry {
@@ -265,6 +309,7 @@ pub const KINDS: &[&str] = &[
     "dispute",
     "deposit",
     "period-close",
+    "attachment",
 ];
 
 /// A book's state.
@@ -749,6 +794,7 @@ impl Ledger {
                         disputed: false,
                         deleted: false,
                         edited_by: None,
+                        attachments: Vec::new(),
                     },
                 );
             }
@@ -770,6 +816,7 @@ impl Ledger {
                 entry.edited_by = Some(r.seq);
                 entry.author = old.author;
                 entry.disputed = old.disputed;
+                entry.attachments = old.attachments.clone();
                 self.entries.insert(old.seq, entry);
             }
             "entry-delete" => {
@@ -794,6 +841,62 @@ impl Ledger {
                 self.author_in(e.agreement, author, today)?;
                 if let Some(e) = self.entries.get_mut(&b.target) {
                     e.disputed = !b.resolved;
+                }
+            }
+            "attachment" => {
+                let b: AttachmentBody = parse(&r.body)?;
+                let e = self
+                    .entries
+                    .get(&b.target)
+                    .ok_or_else(|| no("There's no such entry."))?
+                    .clone();
+                if e.deleted {
+                    return Err(no("That entry was deleted."));
+                }
+                if !matches!(e.kind, EntryKind::Expense { .. }) {
+                    return Err(no("Pictures and PDFs go with expenses."));
+                }
+                self.author_in(e.agreement, author, today)?;
+                if !is_sha256_hex(&b.sha256) {
+                    return Err(no("That file's fingerprint isn't valid."));
+                }
+                let at = e.attachments.iter().position(|f| f.sha256 == b.sha256);
+                let entry = self.entries.get_mut(&b.target).expect("checked above");
+                if b.remove {
+                    let i = at.ok_or_else(|| no("That file isn't attached to this entry."))?;
+                    entry.attachments.remove(i);
+                } else {
+                    if at.is_some() {
+                        return Err(no("That file is already attached."));
+                    }
+                    if entry.attachments.len() >= ATTACH_MAX {
+                        return Err(no(format!(
+                            "An expense can carry {ATTACH_MAX} pictures or PDFs."
+                        )));
+                    }
+                    if !ATTACH_TYPES.contains(&b.mime.as_str()) {
+                        return Err(no(
+                            "Only pictures (JPEG, PNG, WebP) and PDFs can be attached.",
+                        ));
+                    }
+                    if b.size == 0 || b.size > ATTACH_MAX_BYTES {
+                        return Err(no("A file can be at most 10 MB."));
+                    }
+                    let name: String = b
+                        .name
+                        .trim()
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(80)
+                        .collect();
+                    entry.attachments.push(FileRef {
+                        sha256: b.sha256,
+                        name: if name.is_empty() { "file".into() } else { name },
+                        mime: b.mime,
+                        size: b.size,
+                        seq: r.seq,
+                        by: author,
+                    });
                 }
             }
             "deposit" => {
@@ -1073,6 +1176,7 @@ impl Ledger {
             disputed: false,
             deleted: false,
             edited_by: None,
+            attachments: Vec::new(),
         })
     }
 

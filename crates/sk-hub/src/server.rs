@@ -48,6 +48,7 @@ pub const DEVICE_KINDS: &[&str] = &[
     "entry-delete",
     "rule-proposal",
     "deposit",
+    "attachment",
     "member-join",
     "member-leave",
     "period-close",
@@ -63,6 +64,8 @@ pub const ADMIN_TOKEN_FILE: &str = "admin.token";
 pub const BOOKS_DIR: &str = "books";
 pub const BACKUPS_DIR: &str = "backups";
 pub const STATEMENTS_DIR: &str = "statements";
+/// Where attached pictures and PDFs are kept, a folder per book, each file named by its SHA-256.
+pub const FILES_DIR: &str = "files";
 
 const MAX_BODY: u64 = 1 << 20;
 const MAX_PAGE: u64 = 1000;
@@ -685,6 +688,27 @@ fn add_record(
     Ok((rec, fresh))
 }
 
+/// Where the hub keeps a book's attached files.
+fn files_dir(shared: &Shared, book_id: &str) -> PathBuf {
+    shared.data.join(FILES_DIR).join(book_id)
+}
+
+/// The file an `attachment` record names is here, with the size and kind it gives.
+fn file_matches(shared: &Shared, book_id: &str, body: &Value) -> Result<(), String> {
+    let sha = body["sha256"].as_str().unwrap_or("");
+    if !sk_ledger::is_sha256_hex(sha) {
+        return Err("That file's fingerprint isn't valid.".into());
+    }
+    let bytes = std::fs::read(files_dir(shared, book_id).join(sha))
+        .map_err(|_| "Send the file first: the hub doesn't have it.".to_string())?;
+    if Some(bytes.len() as u64) != body["size"].as_u64()
+        || sk_ledger::sniff_type(&bytes) != body["mime"].as_str()
+    {
+        return Err("The file doesn't match its description.".into());
+    }
+    Ok(())
+}
+
 /// One backup a day, made with the day's first change (`<name> backup <date>.sharekeep` in
 /// the backups folder): what guided recovery restores from if the book ever breaks.
 fn daily_backup(shared: &Shared, store: &Store) {
@@ -955,6 +979,12 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
             if !sub.body.is_object() {
                 return fail(shared, req, 400, "A record's body must be an object.");
             }
+            // a file is attached only once the hub holds it, as it was described
+            if sub.kind == "attachment" && !sub.body["remove"].as_bool().unwrap_or(false) {
+                if let Err(m) = file_matches(shared, &d.book_id, &sub.body) {
+                    return fail(shared, req, 422, &m);
+                }
+            }
             let author = Author {
                 member: Some(sk_core::MemberId(d.member)),
                 device: d.name.clone(),
@@ -974,6 +1004,74 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
                 Ok((rec, fresh)) => send(shared, req, if fresh { 201 } else { 200 }, &json!(rec)),
                 Err((s, m)) => fail(shared, req, s, &m),
             }
+        }
+        ("POST", "/api/v1/files") => {
+            // a picture or PDF for an expense: kept beside the book, named by its SHA-256
+            let mut bytes = Vec::new();
+            if req
+                .as_reader()
+                .take(sk_ledger::ATTACH_MAX_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .is_err()
+            {
+                return fail(shared, req, 400, "The file couldn't be read.");
+            }
+            if bytes.len() as u64 > sk_ledger::ATTACH_MAX_BYTES {
+                return fail(shared, req, 413, "A file can be at most 10 MB.");
+            }
+            let Some(mime) = sk_ledger::sniff_type(&bytes) else {
+                return fail(
+                    shared,
+                    req,
+                    415,
+                    "Only pictures (JPEG, PNG, WebP) and PDFs can be attached.",
+                );
+            };
+            let sha = sk_chain::Hash::of(&bytes).to_hex();
+            let dir = files_dir(shared, &d.book_id);
+            let path = dir.join(&sha);
+            if !path.is_file() {
+                if let Err(e) = std::fs::create_dir_all(&dir)
+                    .map_err(|e| e.to_string())
+                    .and_then(|_| util::write_private(&path, &bytes).map_err(|e| e.to_string()))
+                {
+                    return fail(
+                        shared,
+                        req,
+                        500,
+                        &format!("The file couldn't be kept ({e})."),
+                    );
+                }
+            }
+            send(
+                shared,
+                req,
+                200,
+                &json!({"sha256": sha, "mime": mime, "size": bytes.len()}),
+            )
+        }
+        ("GET", p) if p.starts_with("/api/v1/files/") => {
+            let sha = p.trim_start_matches("/api/v1/files/");
+            if !sk_ledger::is_sha256_hex(sha) {
+                return fail(shared, req, 404, "No such file.");
+            }
+            let Ok(bytes) = std::fs::read(files_dir(shared, &d.book_id).join(sha)) else {
+                return fail(shared, req, 404, "The hub doesn't have that file.");
+            };
+            let mime = sk_ledger::sniff_type(&bytes).unwrap_or("application/octet-stream");
+            let mut resp = Response::from_data(bytes).with_status_code(200);
+            for (k, v) in [
+                ("Content-Type", mime),
+                ("X-Content-Type-Options", "nosniff"),
+                // named by its contents, so it never changes
+                ("Cache-Control", "private, max-age=31536000, immutable"),
+            ] {
+                if let Some(h) = header(k, v) {
+                    resp.add_header(h);
+                }
+            }
+            let _ = req.respond(resp);
+            (shared.log)(&format!("GET {p} 200"));
         }
         ("GET", "/api/v1/verify") => {
             // Verify, answered by the hub from the whole history

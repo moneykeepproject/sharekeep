@@ -89,10 +89,36 @@ try:
         pg.fill('label:has-text("Category") input', 'Groceries')
         pg.wait_for_selector('.sheet .kv')
         pg.screenshot(path=f'{out}/03-expense.png')
+        # a phone photo (shrunk before it's sent) and a PDF go with the expense
+        from PIL import Image
+        photo = os.path.join(tempfile.mkdtemp(), 'receipt.jpg')
+        Image.new('RGB', (4000, 3000), (200, 120, 40)).save(photo, quality=95)
+        pdf = os.path.join(os.path.dirname(photo), 'invoice.pdf')
+        with open(pdf, 'wb') as f:
+            f.write(b'%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n')
+        with pg.expect_file_chooser() as fc:
+            pg.click('.sheet >> text=+ Picture or PDF')
+        fc.value.set_files([photo, pdf])
+        pg.wait_for_selector('.sheet button.chip.file:has-text("invoice.pdf")')
         pg.click('.sheet button.btn:has-text("Save")')
         pg.wait_for_selector('text=Groceries')
+        pg.wait_for_selector('#page button.chip.file:has-text("receipt.jpg")')
+        pg.wait_for_selector('#page button.chip.file:has-text("invoice.pdf")')
         time.sleep(0.5)
         pg.screenshot(path=f'{out}/04-activity.png')
+        pg.click('#page button.chip.file:has-text("receipt.jpg")')
+        pg.wait_for_selector('.sheet img.attached')
+        pg.wait_for_function("document.querySelector('.sheet img.attached').naturalWidth > 0")
+        w = pg.evaluate("document.querySelector('.sheet img.attached').naturalWidth")
+        assert w == 1600, w
+        assert 'fingerprint' not in pg.text_content('.sheet')
+        print('attached photo width', w)
+        pg.screenshot(path=f'{out}/04b-attachment.png')
+        # taken off: the history keeps that it was there
+        pg.click('.sheet >> text=Take it off this expense')
+        pg.click('.sheet >> text=Take it off this expense')
+        pg.wait_for_selector('#page button.chip.file:has-text("receipt.jpg")', state='detached')
+        assert pg.locator('#page button.chip.file:has-text("invoice.pdf")').count() == 1
         pg.click('#tabs >> text=Rules')
         pg.click('text=Propose a rule')
         pg.fill('label:has-text("Name") input', 'Internet')

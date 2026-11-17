@@ -47,6 +47,7 @@ What `sk-chain` and `sk-store` must do. From the owner's "ShareKeep Design Spec 
   refused with a message to update. Book version 3 (no table change) marks that the history
   may hold record kinds a version-2 ShareKeep doesn't know (`recurring`, `restore`,
   `restore-accept`), so an older version refuses the book instead of skipping records.
+  Book version 4 (no table change) does the same for `attachment` records.
   Opening for recovery (a broken book, a backup) never upgrades or otherwise changes the
   file; a restored copy is upgraded when it opens. A SQLite file that isn't a ShareKeep book is refused
   and left untouched.

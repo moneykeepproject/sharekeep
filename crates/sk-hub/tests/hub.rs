@@ -1041,3 +1041,54 @@ fn a_new_device_can_start_from_a_checkpoint() {
         other => panic!("expected CheckpointNotKept, got {other:?}"),
     }
 }
+
+#[test]
+fn pictures_and_pdfs_are_kept_beside_the_book_and_named_by_their_fingerprint() {
+    let h = hub();
+    let (book, _) = household(&h, true, None);
+    let code = pairing_code(&h, &book, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    let e = sam.submit_now("expense", &expense(4000, 2)).unwrap();
+    let pdf = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n".to_vec();
+    // an unknown kind of file is refused
+    assert_eq!(
+        status(&sam.upload(b"<html><script>", "text/html").unwrap_err()),
+        415
+    );
+    // attaching a file the hub doesn't hold is refused
+    let missing = json!({"target": e.seq, "sha256": format!("{:064x}", 7), "name": "x.pdf", "mime": "application/pdf", "size": 10});
+    assert_eq!(
+        status(&sam.submit_now("attachment", &missing).unwrap_err()),
+        422
+    );
+    let f = sam.upload(&pdf, "application/pdf").unwrap();
+    assert_eq!(f.sha256, sk_chain::Hash::of(&pdf).to_hex());
+    assert_eq!(
+        (f.mime.as_str(), f.size),
+        ("application/pdf", pdf.len() as u64)
+    );
+    assert!(h.data.join("files").join(&book).join(&f.sha256).is_file());
+    // described wrongly: refused
+    let wrong = json!({"target": e.seq, "sha256": f.sha256, "name": "bill.pdf", "mime": "image/png", "size": f.size});
+    assert_eq!(
+        status(&sam.submit_now("attachment", &wrong).unwrap_err()),
+        422
+    );
+    let body = json!({"target": e.seq, "sha256": f.sha256, "name": "bill.pdf", "mime": f.mime, "size": f.size});
+    sam.submit_now("attachment", &body).unwrap();
+    assert_eq!(sam.file(&f.sha256).unwrap(), pdf);
+    assert_eq!(status(&sam.file(&"0".repeat(64)).unwrap_err()), 404);
+    assert_eq!(status(&sam.file("../../hub.json").unwrap_err()), 404);
+    // the web app's view lists it on the expense
+    let token = sam.token().unwrap();
+    let (s, b) = https(&h, "GET", "/api/v1/view", Some(token), None);
+    assert_eq!(s, 200);
+    let v: Value = serde_json::from_slice(&b).unwrap();
+    let row = &v["agreements"][0]["activity"][0];
+    assert_eq!(row["attachments"][0]["name"], "bill.pdf", "{row}");
+    assert_eq!(row["can_attach"], true);
+    // the history holds the fingerprint; the hub's own Verify still passes
+    let (_, b) = https(&h, "GET", "/api/v1/verify", Some(token), None);
+    let v: Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["numbers"]["ok"], true, "{v}");
+}

@@ -85,6 +85,23 @@ fn main() {
     let mut st = State::new(std::env::temp_dir(), cfg, jobs, true);
     st.today = today;
     st.ledger = sk_ui::demo::ledger(today);
+    // a receipt photo on the newest expense
+    if let Some(e) = st
+        .ledger
+        .entries
+        .values_mut()
+        .rev()
+        .find(|e| matches!(e.kind, sk_ledger::EntryKind::Expense { .. }) && !e.deleted)
+    {
+        e.attachments.push(sk_ledger::FileRef {
+            sha256: "ab".repeat(32),
+            name: "receipt.jpg".into(),
+            mime: "image/jpeg".into(),
+            size: 312_000,
+            seq: e.seq,
+            by: e.author,
+        });
+    }
     st.records = sk_ui::demo::records(today);
     st.seen = st.records.last().map(|r| (r.seq, r.ts));
     st.hub_ledger = st.ledger.clone();
@@ -185,7 +202,12 @@ fn main() {
         .enumerate()
     {
         ui.set_tab(i as i32);
-        shot(&win, w, h, &p(&format!("1{i}-agreement-{tab}")));
+        shot(
+            &win,
+            w,
+            if i == 0 { h * 2 } else { h },
+            &p(&format!("1{i}-agreement-{tab}")),
+        );
     }
     ui.set_page(3);
     shot(&win, w, h, &p("20-approvals"));

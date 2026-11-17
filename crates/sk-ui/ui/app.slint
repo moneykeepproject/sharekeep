@@ -8,7 +8,8 @@ export { Theme }
 
 export struct MemberS { id: int, name: string, balance: string, sign: int }
 export struct CardS { id: int, name: string, headline: string, sign: int, members: [MemberS], period: string, waiting: int }
-export struct ActivityS { seq: int, date: string, title: string, detail: string, amount: string, disputed: bool, editable: bool }
+export struct FileS { sha: string, name: string, size: string }
+export struct ActivityS { seq: int, date: string, title: string, detail: string, amount: string, disputed: bool, editable: bool, files: [FileS], can-attach: bool }
 export struct RuleS { id: int, name: string, method: string, detail: string }
 export struct PeriodS { key: string, label: string, state: string, closed: bool, can-close: bool }
 export struct ApprovalS { seq: int, title: string, detail: string }
@@ -458,6 +459,10 @@ export component AppWindow inherits Window {
     callback delete-entry(int);
     callback edit-entry(int);
     callback dispute-entry(int);
+    // pictures and PDFs on an expense
+    callback attach-file(int);
+    callback open-file(string, string);
+    callback detach-file(int, string, string);
     callback dismiss-refused();
     callback record-due(int);
     callback paid-due(int);
@@ -747,8 +752,22 @@ export component AppWindow inherits Window {
                             }
                             Text { text: a.amount; font-weight: 700; color: Theme.ink; vertical-alignment: center; }
                         }
+                        if a.files.length > 0: HorizontalLayout {
+                            alignment: start;
+                            spacing: 2px;
+                            for f in a.files: HorizontalLayout {
+                                LinkButton { text: f.name + " (" + f.size + ")"; clicked => { root.open-file(f.sha, f.name); } }
+                                LinkButton { text: "×"; fg: Theme.red; clicked => { root.detach-file(a.seq, f.sha, f.name); } }
+                            }
+                        }
+                        // a closed period's expense can still take a receipt
+                        if !a.editable && a.can-attach: HorizontalLayout {
+                            alignment: end;
+                            LinkButton { text: "+ Picture or PDF"; clicked => { root.attach-file(a.seq); } }
+                        }
                         if a.editable: HorizontalLayout {
                             alignment: end;
+                            if a.can-attach: LinkButton { text: "+ Picture or PDF"; clicked => { root.attach-file(a.seq); } }
                             if a.title != "Payment": LinkButton { text: "Edit"; clicked => { root.edit-entry(a.seq); } }
                             LinkButton { text: a.disputed ? "Resolve" : "Dispute"; fg: Theme.amber; clicked => { root.dispute-entry(a.seq); } }
                             LinkButton { text: "Delete"; fg: Theme.red; clicked => { root.delete-entry(a.seq); } }

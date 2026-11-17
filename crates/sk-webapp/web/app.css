@@ -101,3 +101,6 @@ details summary { cursor: pointer; color: #0f766e; font-weight: 600; margin: 8px
   .sheet { box-shadow: none !important; max-height: none !important; overflow: visible !important; }
   .sheet .btn, .sheet .head .link { display: none !important; }
 }
+.files { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.chip.file { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+img.attached { display: block; max-width: 100%; max-height: 60vh; margin: 8px auto; border-radius: 8px; }

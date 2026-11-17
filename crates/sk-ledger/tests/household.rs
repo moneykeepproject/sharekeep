@@ -564,3 +564,77 @@ fn every_listed_kind_is_understood_and_no_other() {
     let e = l.check(&rec("teleport")).unwrap_err();
     assert!(e.0.contains("doesn't know"));
 }
+
+#[test]
+fn pictures_and_pdfs_go_with_expenses() {
+    let mut b = household();
+    approved_rule(&mut b, equal_rule(1, "Equal", "2027-01-01", &[]));
+    let e = b.add(
+        day(1, 10),
+        Some(JERRY),
+        "expense",
+        expense("2027-01-10", 9000, JERRY, "Food"),
+    );
+    let file = |n: u8| json!({"target": e, "sha256": format!("{:064x}", n), "name": "receipt.jpg", "mime": "image/jpeg", "size": 300_000});
+    // anyone in the agreement, after the expense was recorded
+    b.add(day(1, 11), Some(SAM), "attachment", file(1));
+    assert_eq!(b.ledger.entries[&e].attachments.len(), 1);
+    assert_eq!(b.ledger.entries[&e].attachments[0].by, Some(MemberId(SAM)));
+    assert!(b
+        .try_add(day(1, 11), Some(SAM), "attachment", file(1))
+        .unwrap_err()
+        .contains("already"));
+    // only pictures and PDFs, at most 10 MB, five to an expense
+    let mut odd = file(9);
+    odd["mime"] = json!("text/html");
+    assert!(b
+        .try_add(day(1, 11), Some(JERRY), "attachment", odd)
+        .unwrap_err()
+        .contains("Only pictures"));
+    let mut big = file(9);
+    big["size"] = json!(11 * 1024 * 1024);
+    assert!(b
+        .try_add(day(1, 11), Some(JERRY), "attachment", big)
+        .is_err());
+    let mut bad = file(9);
+    bad["sha256"] = json!("../../etc");
+    assert!(b
+        .try_add(day(1, 11), Some(JERRY), "attachment", bad)
+        .is_err());
+    for n in 2..=5 {
+        b.add(day(1, 11), Some(JERRY), "attachment", file(n));
+    }
+    assert!(b
+        .try_add(day(1, 11), Some(JERRY), "attachment", file(6))
+        .unwrap_err()
+        .contains("5"));
+    // an edit keeps them; a removal takes one off (the history keeps that it was there)
+    b.add(
+        day(1, 12),
+        Some(JERRY),
+        "entry-edit",
+        json!({"target": e, "expense": expense("2027-01-10", 9300, JERRY, "Food")}),
+    );
+    assert_eq!(b.ledger.entries[&e].attachments.len(), 5);
+    let mut off = file(3);
+    off["remove"] = json!(true);
+    b.add(day(1, 13), Some(ALEX), "attachment", off.clone());
+    assert_eq!(b.ledger.entries[&e].attachments.len(), 4);
+    assert!(b
+        .try_add(day(1, 13), Some(ALEX), "attachment", off)
+        .is_err());
+    // payments don't carry files
+    let p = b.add(
+        day(1, 14),
+        Some(SAM),
+        "payment",
+        json!({"agreement": 1, "date": "2027-01-14", "from": SAM, "to": JERRY, "amount": 100}),
+    );
+    let mut on_payment = file(7);
+    on_payment["target"] = json!(p);
+    assert!(b
+        .try_add(day(1, 14), Some(SAM), "attachment", on_payment)
+        .is_err());
+    // money doesn't move
+    assert_eq!(b.balance(JERRY) + b.balance(SAM) + b.balance(ALEX), 0);
+}

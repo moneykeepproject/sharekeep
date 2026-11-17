@@ -104,6 +104,8 @@ pub fn agreement_schedule(
 pub type NeedRow = (MemberId, String, String);
 
 pub struct State {
+    /// A file asked to be taken off an expense (the next click on it does it).
+    pub armed_detach: Option<(i32, String)>,
     pub dir: PathBuf,
     pub cfg: AppConfig,
     pub jobs: Sender<Job>,
@@ -204,6 +206,7 @@ impl State {
             .map(|b| currency(&b.currency))
             .unwrap_or(Currency::ALL[0]);
         State {
+            armed_detach: None,
             dir,
             cfg,
             jobs,
@@ -991,6 +994,17 @@ impl State {
                         amount: s(r.amount),
                         disputed: r.disputed,
                         editable: r.editable,
+                        files: model(
+                            r.attachments
+                                .iter()
+                                .map(|f| FileS {
+                                    sha: s(&f.sha256),
+                                    name: s(&f.name),
+                                    size: s(&f.size),
+                                })
+                                .collect(),
+                        ),
+                        can_attach: r.can_attach,
                     })
                     .collect(),
             ));
@@ -1709,6 +1723,48 @@ impl State {
         self.send(Job::Send {
             kind: "entry-delete".into(),
             body: json!({"target": seq}),
+        });
+    }
+
+    /// Pick a picture or PDF on this computer and attach it to an expense.
+    pub fn attach_file(&self, ui: &AppWindow, seq: i32) {
+        let jobs = self.jobs.clone();
+        crate::dialogs::open_file(
+            ui.window(),
+            "Attach a picture or PDF",
+            ("Pictures and PDFs", &["jpg", "jpeg", "png", "webp", "pdf"]),
+            move |p| {
+                if let Some(path) = p {
+                    let _ = jobs.send(Job::Attach {
+                        seq: seq as u64,
+                        path,
+                    });
+                }
+            },
+        );
+    }
+
+    pub fn open_file(&self, sha: &str, name: &str) {
+        self.send(Job::OpenFile {
+            sha256: sha.into(),
+            name: name.into(),
+        });
+    }
+
+    /// Take a file off an expense: the first click asks, the second does it.
+    pub fn detach_file(&mut self, ui: &AppWindow, seq: i32, sha: &str, name: &str) {
+        let key = (seq, sha.to_string());
+        if self.armed_detach.as_ref() != Some(&key) {
+            self.armed_detach = Some(key);
+            return toast(
+                ui,
+                &format!("Click × again to take {name} off this expense."),
+            );
+        }
+        self.armed_detach = None;
+        self.send(Job::Send {
+            kind: "attachment".into(),
+            body: json!({"target": seq, "sha256": sha, "remove": true}),
         });
     }
 

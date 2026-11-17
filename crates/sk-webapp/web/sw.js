@@ -1,7 +1,7 @@
 // ShareKeep's service worker: the app's own files are kept for opening offline; anything
 // under /api/ always goes to the hub (never cached).
 'use strict';
-const CACHE = 'sharekeep-8';
+const CACHE = 'sharekeep-9';
 const FILES = ['/', '/index.html', '/boot.js', '/app.css', '/app.js', '/manifest.webmanifest', '/icon.svg', '/help'];
 
 self.addEventListener('install', (e) => {

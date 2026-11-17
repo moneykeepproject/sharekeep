@@ -385,31 +385,31 @@ fn version(path: &Path) -> String {
 }
 
 #[test]
-fn a_version_2_book_becomes_version_3_and_older_sharekeeps_refuse_it() {
+fn an_older_book_is_brought_up_to_date_and_older_sharekeeps_refuse_it() {
     let dir = tempfile::tempdir().unwrap();
     let c = Store::create(dir.path(), new_book("Home", true, None)).unwrap();
     drop(c.store);
     assert_eq!(version(&c.path), sk_store::SCHEMA_VERSION.to_string());
-    assert_eq!(sk_store::SCHEMA_VERSION, 3);
+    assert_eq!(sk_store::SCHEMA_VERSION, 4);
     // a book saved by the version before restores and recurring bills
     tamper(
         &c.path,
         "DELETE FROM meta WHERE key = 'record_kinds'; UPDATE meta SET value = '2' WHERE key = 'schema_version';",
     );
     drop(Store::open(&c.path, None).unwrap());
-    assert_eq!(version(&c.path), "3");
-    // what a version-2 ShareKeep does with it: "made by a newer ShareKeep"
+    assert_eq!(version(&c.path), "4");
+    // what an older ShareKeep does with it: "made by a newer ShareKeep"
     tamper(
         &c.path,
-        "UPDATE meta SET value = '4' WHERE key = 'schema_version';",
+        "UPDATE meta SET value = '5' WHERE key = 'schema_version';",
     );
     assert!(matches!(
         Store::open(&c.path, None),
-        Err(StoreError::NewerVersion { found: 4 })
+        Err(StoreError::NewerVersion { found: 5 })
     ));
     assert!(matches!(
         Store::open_for_recovery(&c.path, None),
-        Err(StoreError::NewerVersion { found: 4 })
+        Err(StoreError::NewerVersion { found: 5 })
     ));
 }
 
@@ -450,5 +450,5 @@ fn recovery_reads_an_older_book_or_backup_without_changing_it() {
     // a restored copy is a book in use: it is brought up to date
     let copy = restore_copy(&backup, dir.path(), "2027-01-02").unwrap();
     drop(Store::open(&copy, None).unwrap());
-    assert_eq!(version(&copy), "3");
+    assert_eq!(version(&copy), "4");
 }

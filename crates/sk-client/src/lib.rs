@@ -213,8 +213,43 @@ impl Client {
 
     /// A closed period's statement (PDF bytes).
     pub fn statement(&self, agreement: u32, first: &str) -> Result<Vec<u8>, CallError> {
+        self.raw(
+            "GET",
+            &format!("/api/v1/statements/{agreement}/{first}"),
+            "application/pdf",
+            None,
+        )
+    }
+
+    /// Send a picture or PDF to the hub, to attach to an expense: what the hub made of it.
+    pub fn upload(&self, bytes: &[u8], content_type: &str) -> Result<api::FileAnswer, CallError> {
+        let answer = self.raw(
+            "POST",
+            "/api/v1/files",
+            "application/json",
+            Some((bytes, content_type)),
+        )?;
+        serde_json::from_slice(&answer).map_err(|e| CallError::BadAnswer(e.to_string()))
+    }
+
+    /// An attached file, by its SHA-256 (not checked here).
+    pub fn file(&self, sha256: &str) -> Result<Vec<u8>, CallError> {
+        self.raw("GET", &format!("/api/v1/files/{sha256}"), "*/*", None)
+    }
+
+    /// A call whose answer (or body) isn't JSON.
+    fn raw(
+        &self,
+        method: &str,
+        path: &str,
+        accept: &str,
+        body: Option<(&[u8], &str)>,
+    ) -> Result<Vec<u8>, CallError> {
         let auth = self.token.as_ref().map(|t| format!("Bearer {t}"));
-        let mut headers: Vec<(&str, &str)> = vec![("Accept", "application/pdf")];
+        let mut headers: Vec<(&str, &str)> = vec![("Accept", accept)];
+        if let Some((_, ct)) = body {
+            headers.push(("Content-Type", ct));
+        }
         if let Some(a) = &auth {
             headers.push(("Authorization", a));
         }
@@ -222,10 +257,10 @@ impl Client {
             self.hub.addr,
             &self.hub.host,
             &self.hub.ca_der(),
-            "GET",
-            &format!("/api/v1/statements/{agreement}/{first}"),
+            method,
+            path,
             &headers,
-            None,
+            body.map(|(b, _)| b),
         )
         .map_err(CallError::Offline)?;
         if !(200..300).contains(&status) {

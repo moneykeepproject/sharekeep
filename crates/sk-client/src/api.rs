@@ -34,6 +34,14 @@ pub struct PairAnswer {
     pub book: BookFacts,
 }
 
+/// `POST /api/v1/files`: the file the hub now keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileAnswer {
+    pub sha256: String,
+    pub mime: String,
+    pub size: u64,
+}
+
 /// `GET /api/v1/me`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeAnswer {

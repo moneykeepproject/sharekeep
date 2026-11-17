@@ -91,3 +91,12 @@ headers; the service worker keeps a copy). The web app's Settings has **Open hel
 "couldn't start" screen links to `/help#blank`. The desktop app shows the same text in
 Settings > Help and questions.
 
+## Pictures and PDFs on expenses
+
+A new expense can take up to 5 pictures or PDFs ("+ Picture or PDF"); an expense already
+recorded takes them from its card ("+ Picture"), in a closed period too. A photo is shrunk on
+the phone to 1600 px on its long side (a JPEG of a few hundred KB) before it is sent; a PDF
+goes as it is (up to 10 MB). Files are sent to the hub at once (they need the hub); the
+`attachment` records wait in the outbox with the expense and follow it. Tapping a file shows
+it (a picture) or offers Open and Save, after checking its SHA-256 against the book; "Take it
+off this expense" (two taps) records a removal.

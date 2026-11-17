@@ -184,6 +184,23 @@ pub struct Dispute {
     pub note: Option<String>,
 }
 
+/// `attachment`: a picture or PDF added to an expense, or taken off it. The file itself is kept
+/// by the hub beside the book; the history keeps its SHA-256, so a swapped file shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentBody {
+    pub target: u64,
+    #[serde(default)]
+    pub remove: bool,
+    /// Lower-case hex SHA-256 of the file.
+    pub sha256: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub mime: String,
+    #[serde(default)]
+    pub size: u64,
+}
+
 /// `deposit`: everything that happens to a deposit except paying bills (an expense paid
 /// by the pot does that).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

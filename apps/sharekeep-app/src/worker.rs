@@ -31,6 +31,16 @@ pub enum Job {
     },
     /// Give up the checkpoint given when pairing.
     ForgetCheckpoint,
+    /// Attach a picture or PDF from this computer to an expense (a photo is shrunk first).
+    Attach {
+        seq: u64,
+        path: PathBuf,
+    },
+    /// Fetch an attached file, check it against the book, and open it in the computer's viewer.
+    OpenFile {
+        sha256: String,
+        name: String,
+    },
     /// Send what waits, then fetch what's new.
     Sync,
     /// A change: queued if it may wait offline, otherwise sent now or refused.
@@ -124,6 +134,8 @@ struct Paired {
     client: Client,
     replica: Replica,
     outbox: Outbox,
+    /// Where opened attachments are kept (`<book folder>/files`).
+    files: PathBuf,
 }
 
 pub struct Worker {
@@ -203,6 +215,7 @@ impl Worker {
                         client,
                         replica,
                         outbox,
+                        files: book_dir.join("files"),
                     });
                     Outcome::Synced(self.sync())
                 }
@@ -212,6 +225,36 @@ impl Worker {
                 }),
             },
             Job::Sync => Outcome::Synced(self.sync()),
+            Job::Attach { seq, path } => {
+                let Some(p) = self.paired.as_ref() else {
+                    return Some(Outcome::Sent(Err("This device isn't paired yet.".into())));
+                };
+                let offline = |e: sk_client::CallError| match e {
+                    sk_client::CallError::Offline(_) => {
+                        format!("{e}. Pictures need the hub: try again when you're home.")
+                    }
+                    _ => e.to_string(),
+                };
+                let r = prepare_file(&path).and_then(|(bytes, mime, name)| {
+                    let f = p.client.upload(&bytes, mime).map_err(offline)?;
+                    p.client
+                        .submit_now(
+                            "attachment",
+                            &json!({"target": seq, "sha256": f.sha256, "name": name, "mime": f.mime, "size": f.size}),
+                        )
+                        .map_err(offline)
+                });
+                match r {
+                    Ok(_) => Outcome::Synced(self.sync()),
+                    Err(e) => Outcome::Sent(Err(e)),
+                }
+            }
+            Job::OpenFile { sha256, name } => {
+                let Some(p) = self.paired.as_ref() else {
+                    return Some(Outcome::Sent(Err("This device isn't paired yet.".into())));
+                };
+                Outcome::Sent(open_attachment(p, &sha256, &name).map(|_| String::new()))
+            }
             Job::Send { kind, body } => {
                 let Some(p) = self.paired.as_mut() else {
                     return Some(Outcome::Sent(Err("This device isn't paired yet.".into())));
@@ -499,4 +542,169 @@ fn find_hub(text: &str) -> Result<(HubAddress, String), String> {
 fn open_local(dir: &Path) -> Result<(Replica, Outbox), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("the book's folder can't be made ({e})"))?;
     Ok((Replica::open(dir)?, Outbox::open(&dir.join("outbox.json"))?))
+}
+
+/// The longest side a photo keeps when it's attached.
+const PHOTO_EDGE: u32 = 1600;
+
+/// A file from this computer, ready to attach: (bytes, kind, name). A photo larger than
+/// [`PHOTO_EDGE`] or 600 KB is turned upright and shrunk to a JPEG; a PDF goes as it is.
+pub fn prepare_file(path: &Path) -> Result<(Vec<u8>, &'static str, String), String> {
+    use std::io::Read;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(64 * 1024 * 1024).read_to_end(&mut bytes))
+        .map_err(|e| format!("{name} can't be read ({e})"))?;
+    let Some(mime) = sk_ledger::sniff_type(&bytes) else {
+        return Err("Only pictures (JPEG, PNG, WebP) and PDFs can be attached.".into());
+    };
+    let picture = mime == "image/jpeg" || mime == "image/png";
+    if picture {
+        let (img, small) = decode_upright(&bytes)?;
+        if !small || bytes.len() > 600 * 1024 {
+            let img = if img.width().max(img.height()) > PHOTO_EDGE {
+                img.resize(
+                    PHOTO_EDGE,
+                    PHOTO_EDGE,
+                    image::imageops::FilterType::Triangle,
+                )
+            } else {
+                img
+            };
+            let mut out = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 82)
+                .encode_image(&img.to_rgb8())
+                .map_err(|e| format!("{name} can't be shrunk ({e})"))?;
+            let stem = path
+                .file_stem()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "photo".into());
+            return Ok((out, "image/jpeg", format!("{stem}.jpg")));
+        }
+    }
+    if bytes.len() as u64 > sk_ledger::ATTACH_MAX_BYTES {
+        return Err(format!("{name} is larger than 10 MB."));
+    }
+    Ok((bytes, mime, name))
+}
+
+/// A picture turned the way the camera held it, and whether it was already small.
+fn decode_upright(bytes: &[u8]) -> Result<(image::DynamicImage, bool), String> {
+    use image::ImageDecoder;
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|_| "That picture can't be read.".to_string())?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .map_err(|_| "That picture can't be read.".to_string())?;
+    img.apply_orientation(orientation);
+    let small = img.width().max(img.height()) <= PHOTO_EDGE
+        && orientation == image::metadata::Orientation::NoTransforms;
+    Ok((img, small))
+}
+
+/// Fetch an attached file, check it is the one the book names, keep it in the book's folder
+/// and open it with the computer's own viewer.
+fn open_attachment(p: &Paired, sha256: &str, name: &str) -> Result<(), String> {
+    if !sk_ledger::is_sha256_hex(sha256) {
+        return Err("That file's fingerprint isn't valid.".into());
+    }
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " -_.()".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(60)
+        .collect();
+    let dir = p.files.join(&sha256[..16]);
+    let path = dir.join(if safe.trim_matches('.').is_empty() {
+        "file".to_string()
+    } else {
+        safe
+    });
+    let cached = std::fs::read(&path)
+        .ok()
+        .filter(|b| sk_chain::Hash::of(b).to_hex() == sha256);
+    if cached.is_none() {
+        let bytes = p.file(sha256)?;
+        if sk_chain::Hash::of(&bytes).to_hex() != sha256 {
+            return Err("The hub's copy of this file isn't the one that was attached (its fingerprint doesn't match the book). Ask the household what happened.".into());
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(&path, &bytes).map_err(|e| format!("the file can't be kept ({e})"))?;
+    }
+    open_with_viewer(&path)
+}
+
+impl Paired {
+    fn file(&self, sha256: &str) -> Result<Vec<u8>, String> {
+        self.client.file(sha256).map_err(|e| match e {
+            sk_client::CallError::Offline(_) => {
+                format!("{e}. Attached files are kept by the hub: try again when you're home.")
+            }
+            _ => e.to_string(),
+        })
+    }
+}
+
+/// Open a file in the computer's own viewer (no shell, no PowerShell).
+fn open_with_viewer(path: &Path) -> Result<(), String> {
+    let mut cmd = if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        std::process::Command::new(PathBuf::from(root).join("explorer.exe"))
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("/usr/bin/open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    cmd.arg(path).spawn().map(|_| ()).map_err(|e| {
+        format!(
+            "the file couldn't be opened ({e}); it is in {}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    #[test]
+    fn a_big_photo_is_shrunk_and_a_pdf_goes_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("receipt.png");
+        image::RgbImage::from_pixel(3200, 2400, image::Rgb([200, 120, 40]))
+            .save(&big)
+            .unwrap();
+        let (bytes, mime, name) = prepare_file(&big).unwrap();
+        assert_eq!((mime, name.as_str()), ("image/jpeg", "receipt.jpg"));
+        let img = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((img.width(), img.height()), (1600, 1200));
+        assert!(bytes.len() < 600 * 1024);
+
+        let pdf = dir.path().join("bill.pdf");
+        std::fs::write(&pdf, b"%PDF-1.4\n%%EOF\n").unwrap();
+        let (bytes, mime, name) = prepare_file(&pdf).unwrap();
+        assert_eq!(
+            (mime, name.as_str(), bytes.len()),
+            ("application/pdf", "bill.pdf", 15)
+        );
+
+        let txt = dir.path().join("notes.txt");
+        std::fs::write(&txt, "hello").unwrap();
+        assert!(prepare_file(&txt).unwrap_err().contains("Only pictures"));
+    }
 }

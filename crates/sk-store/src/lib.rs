@@ -34,7 +34,7 @@ pub use crypt::Secret;
 /// The file extension of a book.
 pub const EXTENSION: &str = "sharekeep";
 /// The schema this build writes.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 const FORMAT: &str = "sharekeep-book";
 
 /// Why a book can't be made, opened or changed.
@@ -454,6 +454,10 @@ const MIGRATIONS: &[&str] = &[
     // guided recovery); an older ShareKeep refuses the book ("made by a newer ShareKeep")
     // instead of skipping those records and showing wrong balances.
     "INSERT OR REPLACE INTO meta (key, value) VALUES ('record_kinds', '3');",
+    // 3 → 4: no table changes. The history may now hold `attachment` records (a picture or
+    // PDF on an expense; the hub keeps the file beside the book), which a version-3 ShareKeep
+    // doesn't know.
+    "INSERT OR REPLACE INTO meta (key, value) VALUES ('record_kinds', '4');",
 ];
 
 fn schema_version(conn: &Connection) -> StoreResult<u32> {
