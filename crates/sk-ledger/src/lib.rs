@@ -285,6 +285,9 @@ impl Agreement {
     }
 }
 
+/// The device name the hub computer's own records carry (a device can't be paired under it).
+pub const HUB_DEVICE: &str = "hub";
+
 /// Every record kind this version of ShareKeep understands. A device that meets any other
 /// kind stops syncing and asks to be updated rather than leave the record out and show wrong
 /// balances (book files carry a version for the same reason: `sk_store::SCHEMA_VERSION`).
@@ -495,6 +498,13 @@ impl Ledger {
                         }
                     }
                     "one_keeper" => {
+                        // chosen before the household's first rule, never switched on later
+                        // to put one person's proposals in force (review M3)
+                        if !self.proposals.is_empty() {
+                            return Err(no(
+                                "A one-keeper household is chosen before the first rule is proposed.",
+                            ));
+                        }
                         self.keeper = s.value.as_u64().map(|v| MemberId(v as u32));
                     }
                     "deposit_interest_bp" => {
@@ -670,6 +680,9 @@ impl Ledger {
             "approval" => {
                 let b: Approval = parse(&r.body)?;
                 let who = author.ok_or_else(|| no("Approvals come from members."))?;
+                if r.author.device == HUB_DEVICE {
+                    return Err(no("Approvals come from the person's own device."));
+                }
                 let p = self
                     .proposals
                     .get_mut(&b.proposal)
@@ -745,6 +758,9 @@ impl Ledger {
             }
             "restore-accept" => {
                 let m = author.ok_or_else(|| no("A member accepts a restore."))?;
+                if r.author.device == HUB_DEVICE {
+                    return Err(no("A restore is accepted on the person's own device."));
+                }
                 let target = r.body["restore"]
                     .as_u64()
                     .ok_or_else(|| no("Say which restore is accepted."))?;

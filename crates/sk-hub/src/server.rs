@@ -57,8 +57,11 @@ pub const DEVICE_KINDS: &[&str] = &[
     "restore-accept",
 ];
 
-/// Kinds the hub computer may add besides those.
-pub const ADMIN_KINDS: &[&str] = &["member-add", "agreement-add"];
+/// Kinds the hub computer may add: the household's people and agreements, an agreement's
+/// schedule, and an agreement's first rule in the name of a person picked (the others approve
+/// it on their devices). Never approvals, payments or anything else in someone's name
+/// (review M3).
+pub const ADMIN_KINDS: &[&str] = &["member-add", "agreement-add", "schedule", "rule-proposal"];
 
 pub const ADMIN_TOKEN_FILE: &str = "admin.token";
 pub const BOOKS_DIR: &str = "books";
@@ -1220,6 +1223,12 @@ fn pair(shared: &Shared, p: &PairRequest) -> Result<PairAnswer, (u16, String)> {
             "Give this device a name of up to 64 characters.".into(),
         ));
     }
+    if device_name.eq_ignore_ascii_case(sk_ledger::HUB_DEVICE) {
+        return Err((
+            400,
+            "Give this device another name: \"hub\" is the hub computer's.".into(),
+        ));
+    }
     let code = normalise_code(&p.code);
     let now = shared.now();
     let pin_hash = {
@@ -1874,20 +1883,44 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
         }
         ("POST", ["books", id, "records"]) => {
             let b = body!(AdminRecord);
-            if !(DEVICE_KINDS.contains(&b.kind.as_str()) || ADMIN_KINDS.contains(&b.kind.as_str()))
-            {
+            if !ADMIN_KINDS.contains(&b.kind.as_str()) {
                 return fail(
                     shared,
                     req,
                     403,
-                    &format!("\"{}\" can't be added here.", b.kind),
+                    &format!(
+                        "\"{}\" can't be added on the hub computer: it comes from the person's own device.",
+                        b.kind
+                    ),
                 );
             }
             let author = Author {
                 member: b.member.map(sk_core::MemberId),
-                device: "hub".into(),
+                device: sk_ledger::HUB_DEVICE.into(),
             };
             let mut st = shared.lock();
+            if b.kind == "rule-proposal" {
+                let a = b.body["agreement"].as_u64().unwrap_or(0) as u32;
+                let first = match open_book(&mut st, id) {
+                    Ok(book) => !book.ledger.proposals.values().any(|p| match &p.kind {
+                        sk_ledger::ProposalKind::Rule(r) => r.agreement.0 == a,
+                        _ => false,
+                    }),
+                    Err((s, m)) => {
+                        drop(st);
+                        return fail(shared, req, s, m);
+                    }
+                };
+                if !first {
+                    drop(st);
+                    return fail(
+                        shared,
+                        req,
+                        403,
+                        "Only an agreement's first rule is proposed on the hub computer; later rules come from people's devices.",
+                    );
+                }
+            }
             let r = add_record(
                 shared,
                 &mut st,
@@ -1925,9 +1958,20 @@ fn admin_call(shared: &Shared, mut req: Request, method: &str, url: &str, parts:
             let mut st = shared.lock();
             let r = match open_book(&mut st, id) {
                 Ok(book) => match book.store.as_mut() {
+                    // the engine decides first (a one-keeper household is chosen early)
                     Some(s) => s
-                        .set_setting(now, Author::hub(), &b.key, b.value)
+                        .candidate(
+                            now,
+                            Author::hub(),
+                            "setting",
+                            json!({"key": b.key, "value": b.value.clone()}),
+                        )
                         .map_err(|e| (store_status(&e), e.to_string()))
+                        .and_then(|c| book.ledger.check(&c).map_err(|e| (422, e.0)))
+                        .and_then(|_| {
+                            s.set_setting(now, Author::hub(), &b.key, b.value)
+                                .map_err(|e| (store_status(&e), e.to_string()))
+                        })
                         .inspect(|rec| {
                             let _ = book.ledger.apply(rec);
                         }),

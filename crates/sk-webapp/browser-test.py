@@ -46,10 +46,22 @@ try:
     admin('POST', f'books/{book}/settings', {'key': 'one_keeper', 'value': 1})
     rec('rule-proposal', {'agreement': 1, 'rule_id': 1, 'effective': first, 'categories': ['Groceries'],
         'rule': {'name': 'Shared', 'method': 'Equal', 'members': [1, 2, 3]}}, member=1)
-    rec('rule-proposal', {'agreement': 1, 'rule_id': 2, 'effective': first, 'categories': ['Heating'],
-        'rule': {'name': 'Heating', 'method': 'Days', 'members': [1, 2, 3]}}, member=1)
-    rec('rule-proposal', {'agreement': 1, 'rule_id': 3, 'effective': first, 'categories': ['Takeout'],
-        'rule': {'name': 'Takeout', 'method': 'Itemized', 'members': [1, 2, 3]}}, member=1)
+    # later rules come from a person's own device (the keeper's: in force at once)
+    import ssl
+    unverified = ssl.create_default_context()
+    unverified.check_hostname = False
+    unverified.verify_mode = ssl.CERT_NONE
+    def device(method, path, body, bearer=None):
+        req = urllib.request.Request('https://127.0.0.1:15443' + path, method=method,
+            data=json.dumps(body).encode(),
+            headers=dict({'Content-Type': 'application/json'}, **({'Authorization': 'Bearer ' + bearer} if bearer else {})))
+        return json.load(urllib.request.urlopen(req, context=unverified))
+    jerry_code = admin('POST', 'pairing', {'book_id': book, 'member': 1})['code']
+    jerry = device('POST', '/api/v1/pair', {'code': jerry_code, 'pin': '482916', 'device': "Jerry's laptop"})['token']
+    for i, (cat, name, method) in enumerate([('Heating', 'Heating', 'Days'), ('Takeout', 'Takeout', 'Itemized')]):
+        device('POST', '/api/v1/records', {'client_id': f'j{i}', 'kind': 'rule-proposal', 'body': {
+            'agreement': 1, 'rule_id': i + 2, 'effective': first, 'categories': [cat],
+            'rule': {'name': name, 'method': method, 'members': [1, 2, 3]}}}, jerry)
     code = admin('POST', 'pairing', {'book_id': book, 'member': 2})
     errors = []
     with sync_playwright() as p:

@@ -638,3 +638,37 @@ fn pictures_and_pdfs_go_with_expenses() {
     // money doesn't move
     assert_eq!(b.balance(JERRY) + b.balance(SAM) + b.balance(ALEX), 0);
 }
+
+#[test]
+fn the_hub_computer_cant_approve_or_turn_on_a_keeper_later() {
+    let mut b = household();
+    let q = b.add(
+        day(1, 2),
+        Some(JERRY),
+        "rule-proposal",
+        equal_rule(1, "Shared", "2027-01-01", &[]),
+    );
+    // an approval in Sam's name, from the hub computer
+    let r = sk_chain::next(
+        b.records.last(),
+        day(1, 2),
+        Author {
+            member: Some(MemberId(SAM)),
+            device: sk_ledger::HUB_DEVICE.into(),
+        },
+        "approval",
+        json!({"proposal": q, "approve": true}),
+    )
+    .unwrap();
+    assert!(b.ledger.check(&r).unwrap_err().0.contains("own device"));
+    // one keeper, once rules are being proposed: refused
+    assert!(b
+        .try_add(
+            day(1, 3),
+            None,
+            "setting",
+            json!({"key": "one_keeper", "value": JERRY})
+        )
+        .unwrap_err()
+        .contains("before the first rule"));
+}

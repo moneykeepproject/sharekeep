@@ -723,16 +723,18 @@ fn the_web_app_is_served_and_its_screens_come_from_the_hub() {
 fn the_preview_asks_for_days_when_the_rule_divides_by_them() {
     let h = hub();
     let (id, _) = household(&h, false, None);
-    admin_record(
-        &h,
-        &id,
-        Some(1),
-        "rule-proposal",
-        json!({
-            "agreement": 1, "rule_id": 2, "effective": "2026-11-01", "categories": ["Heating"],
-            "rule": {"name": "Heating", "method": "Days", "members": [1, 2]},
-        }),
-    );
+    // a later rule comes from a person's device (the keeper's, so it is in force at once)
+    let code = pairing_code(&h, &id, 1);
+    let (jerry, _) = Client::pair(h.address(), &code, PIN, "Jerry's laptop").unwrap();
+    jerry
+        .submit_now(
+            "rule-proposal",
+            &json!({
+                "agreement": 1, "rule_id": 2, "effective": "2026-11-01", "categories": ["Heating"],
+                "rule": {"name": "Heating", "method": "Days", "members": [1, 2]},
+            }),
+        )
+        .unwrap();
     let code = pairing_code(&h, &id, 2);
     let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
     let mut e = expense(10000, 2);
@@ -1129,4 +1131,55 @@ fn pictures_and_pdfs_are_kept_beside_the_book_and_named_by_their_fingerprint() {
     let (_, b) = https(&h, "GET", "/api/v1/verify", Some(token), None);
     let v: Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(v["numbers"]["ok"], true, "{v}");
+}
+
+#[test]
+fn the_hub_computer_cant_act_in_peoples_names() {
+    let h = hub();
+    let (book, _) = household(&h, true, None);
+    let records = format!("/admin/v1/books/{book}/records");
+    // approvals, payments, expenses, closes: from people's own devices only
+    for (kind, body) in [
+        ("approval", json!({"proposal": 7})),
+        (
+            "payment",
+            json!({"agreement": 1, "date": "2026-11-14", "from": 1, "to": 2, "amount": 100}),
+        ),
+        ("expense", expense(100, 2)),
+        ("restore-accept", json!({"restore": 3})),
+    ] {
+        let (s, b) = h.admin(
+            "POST",
+            &records,
+            Some(
+                json!({"client_id": format!("x-{kind}"), "kind": kind, "body": body, "member": 2}),
+            ),
+        );
+        assert_eq!(s, 403, "{kind}: {b}");
+    }
+    // the agreement's first rule was proposed on the hub computer; a second isn't
+    let (s, b) = h.admin(
+        "POST",
+        &records,
+        Some(
+            json!({"client_id": "r2", "kind": "rule-proposal", "member": 1, "body": {
+                "agreement": 1, "rule_id": 2, "effective": "2026-12-01",
+                "rule": {"name": "Sam pays", "method": "Equal", "members": [2]},
+            }}),
+        ),
+    );
+    assert_eq!(s, 403, "{b}");
+    // a one-keeper household is chosen before the first rule, not switched on later
+    let (s, b) = h.admin(
+        "POST",
+        &format!("/admin/v1/books/{book}/settings"),
+        Some(json!({"key": "one_keeper", "value": 2})),
+    );
+    assert_eq!(s, 422, "{b}");
+    // no device can be paired under the hub computer's name
+    let code = pairing_code(&h, &book, 2);
+    assert_eq!(
+        status(&Client::pair(h.address(), &code, PIN, "Hub").unwrap_err()),
+        400
+    );
 }

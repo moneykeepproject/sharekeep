@@ -34,8 +34,13 @@ pairing code copied from MoneyKeep).
   restore-accept). Since 4a every
   record is checked by the agreement engine first (`docs/specs/agreement-engine.md`). The hub stamps each
   record with the device's member and name; a request id makes a resend return the first
-  record instead of adding another. Bodies must be JSON objects. The hub computer may also
-  add member-add, agreement-add and schedule records and change book settings.
+  record instead of adding another. Bodies must be JSON objects. The hub computer adds only
+  member-add, agreement-add and schedule records and an agreement's **first** rule proposal
+  (in the name of a person picked; the others approve on their devices), and changes book
+  settings after the engine checks them. Everything else (approvals, payments, expenses,
+  closes, restore acceptances…) comes from the person's own device; the engine also refuses
+  an approval or restore acceptance whose device is `hub`, and no device can be paired under
+  that name.
 - **Encrypted books** stay locked after a restart until someone at the hub computer enters
   the password (or recovery key); devices get "locked" (423) meanwhile.
 - **Backups**: one a day, made with the day's first change, in `backups/`.

@@ -37,7 +37,8 @@ refused (HTTP 422) with a message for the person who sent it, and nothing is wri
 ## Rules and approvals
 
 - A proposal needs every other member active that day; a one-keeper household needs only
-  the keeper (a keeper's own proposal is in force at once).
+  the keeper (a keeper's own proposal is in force at once). `one_keeper` is chosen before the
+  book's first rule proposal; afterwards the setting is refused.
 - An approved rule version is added with its effective date; its categories get it as their
   default; the agreement's first rule (or one marked `fallback`) is the fallback.
 - On an expense's date, members not in the agreement (or not in its event) are excluded from
