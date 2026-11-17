@@ -78,9 +78,13 @@ by category, entries (disputed rows highlighted), page numbers. The hub saves it
 record with the PDF's SHA-256. Devices download it from `/api/v1/statements/<agreement>/<first>`.
 Every statement prints "History at closing: record N • fingerprint …" (the period-close
 record's head), and "Check a statement" (Hyperbooks) matches a PDF's SHA-256 against the
-seals. A period also exports as CSV (`sk_view::view::csv`): each entry with what it moved
-for each member and their running balances, opening and closing rows, and in a Hyperbook the
-head at export on the last line.
+seals. A period, open or closed, also exports as CSV and as PDF, both from one sheet
+(`sk_view::view::period_sheet`): each entry with what it moved for each member and their running
+balances, opening and closing rows, and in a Hyperbook the head at export. The CSV
+(`view::csv`) has one row per entry; the PDF (`sk_report::period_pdf`) has each person's
+opening, change and closing balance, then the entries with a column per person (deleted and
+disputed highlighted). Devices: the desktop makes both from its own copy; the web app gets
+`/api/v1/csv/<agreement>/<first day>` and `/api/v1/period-pdf/<agreement>/<first day>`.
 
 ## Recurring bills and pot top-ups (`recurring`)
 

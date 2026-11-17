@@ -1371,15 +1371,48 @@ fn csv_cents(v: Cents) -> String {
     format!("{sign}{}.{:02}", v.abs() / 100, v.abs() % 100)
 }
 
-/// A period's entries as a spreadsheet: one row per entry with what it moved for each member
-/// and their balances after it, opening and closing rows, and (for a Hyperbook) the history's
-/// head at export on the last line. `first`: the period's first day.
-pub fn csv(
+/// One row of a period's sheet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SheetRow {
+    pub date: NaiveDate,
+    /// The record (an entry, or the period's close).
+    pub seq: Option<u64>,
+    /// "Opening balances", "Expense", "Payment", "Period closed", "Closing balances".
+    pub what: String,
+    pub category: String,
+    pub by: String,
+    pub amount: Option<Cents>,
+    pub note: String,
+    /// What it moved for each person (in `people`'s order); 0 for nothing.
+    pub change: Vec<Cents>,
+    /// Each person's balance after it.
+    pub balance: Vec<Cents>,
+    /// Deleted or disputed: shown highlighted.
+    pub flagged: bool,
+}
+
+/// A period's entries with what each moved for each member and the running balances: what the
+/// spreadsheet (CSV) and the PDF export both show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PeriodSheet {
+    pub agreement: String,
+    pub first: NaiveDate,
+    pub last: NaiveDate,
+    pub people: Vec<String>,
+    pub rows: Vec<SheetRow>,
+    /// A Hyperbook's head at export.
+    pub head: Option<sk_chain::Head>,
+    /// The file name without its extension: "<agreement> <first> to <last>".
+    pub stem: String,
+}
+
+/// A period's sheet. `first`: the period's first day.
+pub fn period_sheet(
     l: &Ledger,
     a: AgreementId,
     first: NaiveDate,
     head: Option<sk_chain::Head>,
-) -> Result<(String, String), String> {
+) -> Result<PeriodSheet, String> {
     let ag = l.agreements.get(&a).ok_or("There's no such agreement.")?;
     let span = ag
         .schedule
@@ -1390,59 +1423,26 @@ pub fn csv(
         Some(d) => l.balances_until(a, Some(d)),
         None => sk_split::ledger::Balances::new(),
     };
-    let mut out = String::new();
-    let mut head_row = vec![
-        "Date".to_string(),
-        "Record".into(),
-        "What".into(),
-        "Category".into(),
-        "Paid by".into(),
-        "Amount".into(),
-        "Note".into(),
-    ];
-    for m in &people {
-        head_row.push(format!("{} change", name(l, *m)));
-    }
-    for m in &people {
-        head_row.push(format!("{} balance", name(l, *m)));
-    }
-    let line = |cols: Vec<String>| -> String {
-        cols.iter()
-            .map(|c| csv_field(c))
-            .collect::<Vec<_>>()
-            .join(",")
-            + "\r\n"
+    let balances = |b: &sk_split::ledger::Balances| people.iter().map(|m| b.get(*m)).collect();
+    let changes = |before: &sk_split::ledger::Balances, after: &sk_split::ledger::Balances| {
+        people
+            .iter()
+            .map(|m| after.get(*m) - before.get(*m))
+            .collect()
     };
-    out.push_str(&line(head_row));
-    let row = |date: String,
-               seq: String,
-               what: String,
-               cat: String,
-               by: String,
-               amount: String,
-               note: String,
-               change: &BTreeMap<MemberId, Cents>,
-               bal: &sk_split::ledger::Balances| {
-        let mut cols = vec![date, seq, what, cat, by, amount, note];
-        for m in &people {
-            cols.push(change.get(m).map(|v| csv_cents(*v)).unwrap_or_default());
-        }
-        for m in &people {
-            cols.push(csv_cents(bal.get(*m)));
-        }
-        cols
+    let blank = |date: NaiveDate, what: &str, bal: &sk_split::ledger::Balances| SheetRow {
+        date,
+        seq: None,
+        what: what.into(),
+        category: String::new(),
+        by: String::new(),
+        amount: None,
+        note: String::new(),
+        change: vec![0; people.len()],
+        balance: balances(bal),
+        flagged: false,
     };
-    out.push_str(&line(row(
-        span.first.to_string(),
-        String::new(),
-        "Opening balances".into(),
-        String::new(),
-        String::new(),
-        String::new(),
-        String::new(),
-        &BTreeMap::new(),
-        &bal,
-    )));
+    let mut rows = vec![blank(span.first, "Opening balances", &bal)];
     let mut entries: Vec<_> = l
         .entries
         .values()
@@ -1458,11 +1458,6 @@ pub fn csv(
                 let _ = bal.apply(&p);
             }
         }
-        let change: BTreeMap<MemberId, Cents> = people
-            .iter()
-            .map(|m| (*m, bal.get(*m) - before.get(*m)))
-            .filter(|(_, v)| *v != 0)
-            .collect();
         let mut note = String::new();
         if e.deleted {
             note.push_str("deleted; ");
@@ -1470,7 +1465,7 @@ pub fn csv(
         if e.disputed {
             note.push_str("disputed; ");
         }
-        let (what, cat, by, extra) = match &e.kind {
+        let (what, category, by, extra) = match &e.kind {
             EntryKind::Expense { expense, paid, .. } => (
                 "Expense".to_string(),
                 expense.category.clone(),
@@ -1488,17 +1483,18 @@ pub fn csv(
             ),
         };
         note.push_str(&extra);
-        out.push_str(&line(row(
-            e.date.to_string(),
-            e.seq.to_string(),
+        rows.push(SheetRow {
+            date: e.date,
+            seq: Some(e.seq),
             what,
-            cat,
+            category,
             by,
-            csv_cents(e.amount()),
-            note.trim_end_matches("; ").to_string(),
-            &change,
-            &bal,
-        )));
+            amount: Some(e.amount()),
+            note: note.trim_end_matches("; ").to_string(),
+            change: changes(&before, &bal),
+            balance: balances(&bal),
+            flagged: e.deleted || e.disputed,
+        });
     }
     if let Some(c) = ag.closed.iter().find(|c| c.span == span) {
         let before = bal.clone();
@@ -1507,46 +1503,90 @@ pub fn csv(
                 shares: adj.clone(),
             });
         }
-        let change: BTreeMap<MemberId, Cents> = people
-            .iter()
-            .map(|m| (*m, bal.get(*m) - before.get(*m)))
-            .filter(|(_, v)| *v != 0)
-            .collect();
-        out.push_str(&line(row(
-            span.last.to_string(),
-            c.seq.to_string(),
-            "Period closed".into(),
-            String::new(),
-            String::new(),
-            String::new(),
-            "cap adjustments".into(),
-            &change,
-            &bal,
-        )));
+        let mut row = blank(span.last, "Period closed", &bal);
+        row.seq = Some(c.seq);
+        row.note = "cap adjustments".into();
+        row.change = changes(&before, &bal);
+        rows.push(row);
     }
-    out.push_str(&line(row(
-        span.last.to_string(),
-        String::new(),
-        "Closing balances".into(),
-        String::new(),
-        String::new(),
-        String::new(),
-        String::new(),
-        &BTreeMap::new(),
-        &bal,
-    )));
-    if let Some(h) = head {
+    rows.push(blank(span.last, "Closing balances", &bal));
+    Ok(PeriodSheet {
+        agreement: ag.name.clone(),
+        first: span.first,
+        last: span.last,
+        people: people.iter().map(|m| name(l, *m)).collect(),
+        rows,
+        head,
+        stem: format!(
+            "{} {} to {}",
+            crate::file_safe(&ag.name),
+            span.first,
+            span.last
+        ),
+    })
+}
+
+/// A period's entries as a spreadsheet: one row per entry with what it moved for each member
+/// and their balances after it, opening and closing rows, and (for a Hyperbook) the history's
+/// head at export on the last line. `first`: the period's first day.
+pub fn csv(
+    l: &Ledger,
+    a: AgreementId,
+    first: NaiveDate,
+    head: Option<sk_chain::Head>,
+) -> Result<(String, String), String> {
+    let sheet = period_sheet(l, a, first, head)?;
+    let line = |cols: Vec<String>| -> String {
+        cols.iter()
+            .map(|c| csv_field(c))
+            .collect::<Vec<_>>()
+            .join(",")
+            + "\r\n"
+    };
+    let mut head_row = vec![
+        "Date".to_string(),
+        "Record".into(),
+        "What".into(),
+        "Category".into(),
+        "Paid by".into(),
+        "Amount".into(),
+        "Note".into(),
+    ];
+    for p in &sheet.people {
+        head_row.push(format!("{p} change"));
+    }
+    for p in &sheet.people {
+        head_row.push(format!("{p} balance"));
+    }
+    let mut out = line(head_row);
+    for r in &sheet.rows {
+        let mut cols = vec![
+            r.date.to_string(),
+            r.seq.map(|s| s.to_string()).unwrap_or_default(),
+            r.what.clone(),
+            r.category.clone(),
+            r.by.clone(),
+            r.amount.map(csv_cents).unwrap_or_default(),
+            r.note.clone(),
+        ];
+        for c in &r.change {
+            cols.push(if *c == 0 {
+                String::new()
+            } else {
+                csv_cents(*c)
+            });
+        }
+        for b in &r.balance {
+            cols.push(csv_cents(*b));
+        }
+        out.push_str(&line(cols));
+    }
+    if let Some(h) = sheet.head {
         out.push_str(&format!(
             "# History at export: record {} · fingerprint {}\r\n",
             h.seq,
             h.hash.to_hex()
         ));
     }
-    let file = format!(
-        "{} {} to {}.csv",
-        crate::file_safe(&ag.name),
-        span.first,
-        span.last
-    );
-    Ok((file, out))
+    Ok((format!("{}.csv", sheet.stem), out))
 }

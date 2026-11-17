@@ -493,6 +493,7 @@ export component AppWindow inherits Window {
     callback verify();
     callback accept-restore();
     callback export-csv(string);
+    callback export-pdf(string);
     callback hub-recover(string);
     callback hub-recover-pick(string);
     callback hub-restore();
@@ -843,7 +844,12 @@ export component AppWindow inherits Window {
                         Hint { text: p.state; }
                         if p.can-close: BigButton { text: "Close this period"; clicked => { root.close-period(p.key); } }
                         if p.closed: BigButton { text: "Save the statement (PDF)"; primary: false; clicked => { root.statement(p.key); } }
-                        LinkButton { text: "Export to a spreadsheet (CSV)"; clicked => { root.export-csv(p.key); } }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 8px;
+                            LinkButton { text: "Export to a spreadsheet (CSV)"; clicked => { root.export-csv(p.key); } }
+                            LinkButton { text: "Export as PDF"; clicked => { root.export-pdf(p.key); } }
+                        }
                     }
                 }
             }

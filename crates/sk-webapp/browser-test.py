@@ -149,6 +149,12 @@ try:
         assert csv.startswith('Date,Record,What'), csv[:80]
         assert '83.47' in csv and '# History at export: record ' in csv, csv
         print('csv lines', len(csv.splitlines()))
+        with pg.expect_download() as dl:
+            pg.locator('text=Export as PDF').first.click()
+        pdf = open(dl.value.path(), 'rb').read()
+        assert pdf.startswith(b'%PDF'), pdf[:20]
+        assert dl.value.suggested_filename.endswith('.pdf'), dl.value.suggested_filename
+        print('pdf bytes', len(pdf))
         # a recurring bill: added under Rules, due today, recorded from Activity
         pg.click('#nav >> text=Home')
         pg.click('h2:has-text("Apartment")')

@@ -577,7 +577,9 @@ function periodCards(a) {
       }
     } }, 'Close this period') : null,
     p.closed ? h('button', { class: 'btn secondary', onclick: () => statement(a, p.first) }, 'Save the statement (PDF)') : null,
-    h('button', { class: 'link', onclick: () => exportCsv(a, p.first) }, 'Export to a spreadsheet (CSV)')));
+    h('div', { class: 'row' },
+      h('button', { class: 'link', onclick: () => exportCsv(a, p.first) }, 'Export to a spreadsheet (CSV)'),
+      h('button', { class: 'link', onclick: () => exportPdf(a, p.first) }, 'Export as PDF'))));
 }
 
 function scheduleSheet(a) {
@@ -817,6 +819,21 @@ async function verify() {
     });
   } catch (e) {
     toast(e.message);
+  }
+}
+
+async function exportPdf(a, first) {
+  try {
+    const r = await fetch('/api/v1/period-pdf/' + a.id + '/' + first, { headers: { Authorization: 'Bearer ' + S.token }, cache: 'no-store' });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "The PDF can't be made.");
+    const url = URL.createObjectURL(await r.blob());
+    const link = h('a', { href: url, download: a.name + ' ' + first + '.pdf' });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch (e) {
+    toast(e.message === 'Failed to fetch' ? "The household hub can't be reached." : e.message);
   }
 }
 

@@ -4634,8 +4634,10 @@ version = "0.1.0"
 dependencies = [
  "printpdf",
  "qrcodegen",
+ "sk-chain",
  "sk-core",
  "sk-ledger",
+ "sk-view",
 ]
 
 [[package]]

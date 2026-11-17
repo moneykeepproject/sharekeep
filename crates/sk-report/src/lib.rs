@@ -200,6 +200,199 @@ pub fn statement_pdf(s: &Statement, book: &str, currency: Currency) -> Result<Ve
     w.doc.save_to_bytes().map_err(|e| e.to_string())
 }
 
+/// A period's entries as a PDF: the same sheet as the spreadsheet export (`sk_view::view::
+/// period_sheet`), for any period, open or closed: each person's opening, change and closing
+/// balance, then every entry with what it moved for each person (deleted and disputed ones
+/// highlighted), and in a Hyperbook the history's head at export.
+pub fn period_pdf(
+    sheet: &sk_view::view::PeriodSheet,
+    book: &str,
+    currency: Currency,
+) -> Result<Vec<u8>, String> {
+    let money = |v: i64| currency.format(v);
+    let signed = |v: i64| match v {
+        0 => String::new(),
+        v if v > 0 => format!("+{}", currency.format(v)),
+        v => currency.format(v),
+    };
+    let f = |d: sk_core::NaiveDate| d.format("%b %-d, %Y").to_string();
+    let title = format!(
+        "{}: {} to {}",
+        sheet.agreement,
+        f(sheet.first),
+        f(sheet.last)
+    );
+    let mut w = Writer::new(&title)?;
+    w.rect(0.0, PAGE_H - 34.0, PAGE_W, 34.0, ACCENT);
+    w.text_at(
+        "SHAREKEEP • MONEYKEEP FAMILY",
+        8.0,
+        MARGIN,
+        PAGE_H - 11.0,
+        true,
+        (204, 251, 241),
+    );
+    w.text_at(
+        &sheet.agreement,
+        20.0,
+        MARGIN,
+        PAGE_H - 20.0,
+        true,
+        (255, 255, 255),
+    );
+    let sub = format!(
+        "{} • {} to {} • {}",
+        book,
+        f(sheet.first),
+        f(sheet.last),
+        currency.label()
+    );
+    w.text_at(&sub, 9.5, MARGIN, PAGE_H - 27.5, false, (220, 252, 245));
+    w.y = PAGE_H - 40.0;
+    let closed = sheet.rows.iter().any(|r| r.what == "Period closed");
+    w.para(
+        if closed {
+            "This period is closed. A positive balance means the household owes that person; a negative one, that they owe the household. The statement saved at closing is the record of the settlement."
+        } else {
+            "This period is still open: entries can still be added, changed or disputed until it closes. A positive balance means the household owes that person; a negative one, that they owe the household."
+        },
+        9.5,
+        false,
+        INK,
+        0.0,
+    );
+
+    // balances: opening, change, closing for each person
+    w.heading("Balances");
+    let (Some(open), Some(close)) = (sheet.rows.first(), sheet.rows.last()) else {
+        return Err("The period has no rows.".into());
+    };
+    let rows: Vec<Vec<String>> = sheet
+        .people
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let o = open.balance.get(i).copied().unwrap_or(0);
+            let c = close.balance.get(i).copied().unwrap_or(0);
+            vec![p.clone(), money(o), signed(c - o), money(c)]
+        })
+        .collect();
+    let num = 36.0;
+    w.table(
+        &[
+            Col {
+                title: "Person",
+                width: CONTENT_W - 3.0 * num,
+                align: Align::Left,
+            },
+            Col {
+                title: "Opening",
+                width: num,
+                align: Align::Right,
+            },
+            Col {
+                title: "This period",
+                width: num,
+                align: Align::Right,
+            },
+            Col {
+                title: "Closing",
+                width: num,
+                align: Align::Right,
+            },
+        ],
+        &rows,
+        &[],
+    );
+
+    // the entries, with what each moved for each person
+    w.heading("Entries");
+    let entries: Vec<&sk_view::view::SheetRow> = sheet
+        .rows
+        .iter()
+        .filter(|r| r.what != "Opening balances" && r.what != "Closing balances")
+        .collect();
+    if entries.is_empty() {
+        w.para("No entries in this period.", 10.0, false, MUTED, 0.0);
+    } else {
+        let n = sheet.people.len().max(1) as f32;
+        let date_w = 22.0;
+        let amount_w = 26.0;
+        let person_w = ((CONTENT_W - date_w - amount_w - 56.0) / n).clamp(16.0, 30.0);
+        let what_w = CONTENT_W - date_w - amount_w - person_w * n;
+        let mut cols = vec![
+            Col {
+                title: "Date",
+                width: date_w,
+                align: Align::Left,
+            },
+            Col {
+                title: "What",
+                width: what_w,
+                align: Align::Left,
+            },
+            Col {
+                title: "Amount",
+                width: amount_w,
+                align: Align::Right,
+            },
+        ];
+        for p in &sheet.people {
+            cols.push(Col {
+                title: p.as_str(),
+                width: person_w,
+                align: Align::Right,
+            });
+        }
+        let rows: Vec<Vec<String>> = entries
+            .iter()
+            .map(|r| {
+                let mut what = r.what.clone();
+                if !r.category.is_empty() {
+                    what.push_str(&format!(" • {}", r.category));
+                }
+                if !r.by.is_empty() {
+                    what.push_str(&format!(" • {}", r.by));
+                }
+                if !r.note.is_empty() {
+                    what.push_str(&format!(" • {}", r.note));
+                }
+                let mut row = vec![
+                    r.date.format("%b %-d").to_string(),
+                    what,
+                    r.amount.map(money).unwrap_or_default(),
+                ];
+                row.extend(r.change.iter().map(|c| signed(*c)));
+                row
+            })
+            .collect();
+        let flagged: Vec<bool> = entries.iter().map(|r| r.flagged).collect();
+        w.table(&cols, &rows, &flagged);
+        w.para(
+            "The person columns show what each entry moved on that person's balance: + the household owes them more, - they owe more. Highlighted: deleted or disputed.",
+            8.0,
+            false,
+            MUTED,
+            0.0,
+        );
+    }
+    if let Some(h) = sheet.head {
+        w.para(
+            &format!(
+                "History at export: record {} • fingerprint {}",
+                h.seq,
+                h.hash.to_hex()
+            ),
+            7.5,
+            false,
+            MUTED,
+            0.0,
+        );
+    }
+    w.footer(&sheet.agreement);
+    w.doc.save_to_bytes().map_err(|e| e.to_string())
+}
+
 /// A checkpoint to print or keep: the line, the fingerprint in groups for retyping, and a
 /// QR code of the line. `line` is `sk_chain::checkpoint::text`.
 pub fn checkpoint_pdf(
@@ -364,5 +557,17 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() < 200_000, "{} bytes", pdf.len());
         std::fs::write(std::env::temp_dir().join("sk-checkpoint-test.pdf"), &pdf).unwrap();
+    }
+
+    #[test]
+    fn a_period_exports_as_a_pdf() {
+        let today = sk_core::NaiveDate::from_ymd_opt(2027, 3, 14).unwrap();
+        let l = sk_view::demo::ledger(today);
+        let first = sk_core::NaiveDate::from_ymd_opt(2027, 3, 1).unwrap();
+        let sheet = sk_view::view::period_sheet(&l, sk_core::AgreementId(1), first, None).unwrap();
+        assert!(sheet.rows.len() > 2, "the sample period has entries");
+        let pdf = period_pdf(&sheet, "Home", Currency::USD).unwrap();
+        assert!(pdf.starts_with(b"%PDF"));
+        std::fs::write(std::env::temp_dir().join("sk-period-test.pdf"), &pdf).unwrap();
     }
 }

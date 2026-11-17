@@ -10,5 +10,7 @@ repository.workspace = true
 [dependencies]
 sk-core.workspace = true
 sk-ledger.workspace = true
+sk-view.workspace = true
+sk-chain.workspace = true
 printpdf.workspace = true
 qrcodegen.workspace = true

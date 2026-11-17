@@ -981,6 +981,54 @@ fn device_call(shared: &Shared, mut req: Request, method: &str, path: &str, url:
                 Err((s, m)) => fail(shared, req, s, &m),
             }
         }
+        ("GET", p) if p.starts_with("/api/v1/period-pdf/") => {
+            // /api/v1/period-pdf/<agreement>/<first day>: the period as a PDF, any period
+            let rest: Vec<&str> = p
+                .trim_start_matches("/api/v1/period-pdf/")
+                .split('/')
+                .collect();
+            let a = rest.first().and_then(|a| a.parse::<u32>().ok());
+            let first = rest
+                .get(1)
+                .and_then(|f| f.parse::<sk_core::NaiveDate>().ok());
+            let (Some(a), Some(first)) = (a, first) else {
+                return fail(shared, req, 404, "No such period.");
+            };
+            let (head, book) = match book_by_id(&mut shared.lock(), &d.book_id) {
+                Ok(s) => (
+                    s.head().filter(|_| s.info().hyperbook),
+                    s.info().name.clone(),
+                ),
+                Err(_) => (None, String::new()),
+            };
+            let made = device_view(shared, d, |l, cur, _| {
+                sk_view::view::period_sheet(l, sk_core::AgreementId(a), first, head).and_then(
+                    |sheet| sk_report::period_pdf(&sheet, &book, cur).map(|pdf| (sheet.stem, pdf)),
+                )
+            });
+            match made {
+                Ok(Ok((stem, pdf))) => {
+                    let mut resp = Response::from_data(pdf).with_status_code(200);
+                    let disposition = format!(
+                        "attachment; filename=\"{}.pdf\"",
+                        stem.replace(['"', '\\'], "_")
+                    );
+                    for (k, v) in [
+                        ("Content-Type", "application/pdf"),
+                        ("Cache-Control", "no-store"),
+                        ("Content-Disposition", disposition.as_str()),
+                    ] {
+                        if let Some(h) = header(k, v) {
+                            resp.add_header(h);
+                        }
+                    }
+                    let _ = req.respond(resp);
+                    (shared.log)(&format!("GET {p} 200"));
+                }
+                Ok(Err(why)) => fail(shared, req, 404, &why),
+                Err((s, m)) => fail(shared, req, s, &m),
+            }
+        }
         ("GET", p) if p.starts_with("/api/v1/csv/") => {
             // /api/v1/csv/<agreement>/<first day>
             let rest: Vec<&str> = p.trim_start_matches("/api/v1/csv/").split('/').collect();

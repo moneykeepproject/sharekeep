@@ -78,8 +78,8 @@ pub(crate) enum Align {
     Right,
 }
 
-pub(crate) struct Col {
-    pub title: &'static str,
+pub(crate) struct Col<'a> {
+    pub title: &'a str,
     pub width: f32,
     pub align: Align,
 }

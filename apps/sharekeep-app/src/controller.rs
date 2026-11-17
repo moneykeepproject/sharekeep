@@ -804,6 +804,39 @@ impl State {
         }
     }
 
+    /// A period as a PDF, made from this device's own copy (the same sheet as the CSV).
+    pub fn export_pdf(&self, ui: &AppWindow, first: &str) {
+        let Some(a) = self.agreement else { return };
+        let Ok(first) = first.parse::<NaiveDate>() else {
+            return;
+        };
+        let head = self
+            .hyperbook()
+            .then(|| self.records.last().map(sk_chain::Record::head))
+            .flatten();
+        let book = self.cfg.book.as_ref().map_or("", |b| b.name.as_str());
+        let made = view::period_sheet(&self.ledger, a, first, head).and_then(|sheet| {
+            sk_report::period_pdf(&sheet, book, self.cur).map(|pdf| (sheet.stem, pdf))
+        });
+        match made {
+            Ok((stem, bytes)) => {
+                let jobs = self.jobs.clone();
+                crate::dialogs::save_file(
+                    ui.window(),
+                    "Export as PDF",
+                    &format!("{stem}.pdf"),
+                    ("PDF", &["pdf"]),
+                    move |path| {
+                        if let Some(path) = path {
+                            let _ = jobs.send(Job::SaveBytes { path, bytes });
+                        }
+                    },
+                );
+            }
+            Err(e) => toast(ui, &e),
+        }
+    }
+
     fn unlock_body(ui: &AppWindow) -> Value {
         let p = ui.get_unlock_password().to_string();
         if p.is_empty() {

@@ -915,6 +915,27 @@ fn the_web_app_can_verify_the_book_and_export_a_period() {
         https(&h, "GET", "/api/v1/csv/1/nope", Some(token), None).0,
         404
     );
+    // the same period as a PDF
+    let (s, pdf) = https(
+        &h,
+        "GET",
+        "/api/v1/period-pdf/1/2026-11-01",
+        Some(token),
+        None,
+    );
+    assert_eq!(s, 200);
+    assert!(pdf.starts_with(b"%PDF"));
+    assert_eq!(
+        https(
+            &h,
+            "GET",
+            "/api/v1/period-pdf/9/2026-11-01",
+            Some(token),
+            None
+        )
+        .0,
+        404
+    );
 }
 
 #[test]

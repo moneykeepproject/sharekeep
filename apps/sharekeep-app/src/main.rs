@@ -242,6 +242,8 @@ fn wire(ui: &AppWindow) {
     on!(on_accept_restore, |st, _u| st.accept_restore());
     on!(on_export_csv, |st, u, key: slint::SharedString| st
         .export_csv(u, &key));
+    on!(on_export_pdf, |st, u, key: slint::SharedString| st
+        .export_pdf(u, &key));
     on!(on_hub_recover, |st, u, file: slint::SharedString| st
         .hub_recover(u, &file));
     on!(on_hub_recover_pick, |st, u, b: slint::SharedString| st
