@@ -258,6 +258,9 @@ pub struct Agreement {
     /// Occurrences already recorded: (recurring id, due date, the member for a top-up).
     #[serde(default)]
     pub fulfilled: BTreeSet<(u32, NaiveDate, Option<MemberId>)>,
+    /// Earlier stays of members who left and came back.
+    #[serde(default)]
+    pub past_stays: BTreeMap<MemberId, Vec<Membership>>,
 }
 
 /// A recurring bill or top-up.
@@ -291,9 +294,12 @@ pub const EXPECTED_LOOKAHEAD_DAYS: i64 = 7;
 impl Agreement {
     /// Members in the agreement on `date`.
     pub fn active_on(&self, date: NaiveDate) -> BTreeSet<MemberId> {
+        let within = |s: &Membership| s.joined <= date && s.left.is_none_or(|l| date <= l);
         self.members
             .iter()
-            .filter(|(_, s)| s.joined <= date && s.left.is_none_or(|l| date <= l))
+            .filter(|(m, s)| {
+                within(s) || self.past_stays.get(m).is_some_and(|v| v.iter().any(within))
+            })
             .map(|(m, _)| *m)
             .collect()
     }
@@ -630,6 +636,7 @@ impl Ledger {
                         closed: Vec::new(),
                         recurring: BTreeMap::new(),
                         fulfilled: BTreeSet::new(),
+                        past_stays: BTreeMap::new(),
                     },
                 );
             }
@@ -706,6 +713,19 @@ impl Ledger {
                 {
                     return Err(no("That rule already has a version from that date."));
                 }
+                // never back into a past period; a rule in force today changes with the next
+                // period, so a period isn't divided two ways (review L3)
+                if let Some(current) = ag.schedule.period_containing(today) {
+                    if b.effective < current.first {
+                        return Err(no("A rule can't start in a period that has ended."));
+                    }
+                    if b.effective <= current.last && ag.rules.rule_at(b.rule_id, today).is_some() {
+                        return Err(no(format!(
+                            "This rule is in force: a change starts with the next period ({}).",
+                            current.last.succ_opt().unwrap_or(current.last)
+                        )));
+                    }
+                }
                 let approvers = self.approvers(b.agreement, by, today);
                 self.propose(r.seq, by, ProposalKind::Rule(b), approvers)?;
             }
@@ -777,6 +797,14 @@ impl Ledger {
                 if ag.is_closed(b.date) {
                     return Err(no("That date is in a closed period."));
                 }
+                // coming back: the earlier stay is kept, and the new one starts after it
+                // (review L13)
+                if let Some(old) = ag.members.get(&b.member).copied() {
+                    if old.left.is_some_and(|l| b.date <= l) {
+                        return Err(no("They come back after the day they left."));
+                    }
+                    ag.past_stays.entry(b.member).or_default().push(old);
+                }
                 ag.members.insert(
                     b.member,
                     Membership {
@@ -787,6 +815,7 @@ impl Ledger {
             }
             "expense" => {
                 let e: Expense = parse(&r.body)?;
+                self.not_too_late(e.agreement, e.date, today)?;
                 let entry = self.post_expense(r.seq, author, e, None)?;
                 self.fulfil_entry(&entry, true);
                 self.entries.insert(r.seq, entry);
@@ -857,6 +886,11 @@ impl Ledger {
                 if ag.is_closed(p.date) {
                     return Err(no("That date is in a closed period: date it today."));
                 }
+                self.not_too_late(p.agreement, p.date, today)?;
+                let ag = self
+                    .agreements
+                    .get(&p.agreement)
+                    .ok_or_else(|| no("There's no such agreement."))?;
                 place(p.date, None, &ag.schedule)?;
                 self.entries.insert(
                     r.seq,
@@ -1400,6 +1434,33 @@ impl Ledger {
     /// them aside) and every close's adjustments.
     pub fn balances(&self, a: AgreementId) -> Balances {
         self.balances_until(a, None)
+    }
+
+    /// A new entry dated in a period that ended is taken for the book's grace days after its
+    /// end, then no more (review L2): it is dated in the current period instead.
+    fn not_too_late(
+        &self,
+        a: AgreementId,
+        date: NaiveDate,
+        today: NaiveDate,
+    ) -> Result<(), Reject> {
+        let Some(ag) = self.agreements.get(&a) else {
+            return Ok(());
+        };
+        let Some(p) = ag.schedule.period_containing(date) else {
+            return Ok(());
+        };
+        if p.last >= today {
+            return Ok(());
+        }
+        let late = (today - p.last).num_days();
+        if late > i64::from(self.grace_days) {
+            return Err(no(format!(
+                "That period ended {late} days ago, more than the book's {} days for late entries: date it in the current period.",
+                self.grace_days
+            )));
+        }
+        Ok(())
     }
 
     /// The book's day at a moment: in its time zone (UTC for an older book).

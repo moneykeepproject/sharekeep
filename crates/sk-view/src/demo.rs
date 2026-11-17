@@ -174,17 +174,17 @@ pub fn records(today: NaiveDate) -> Vec<Record> {
         json!({"agreement": 1, "date": day(8), "from": 2, "to": 1, "amount": 50000}),
     );
     // a proposal waiting for Jerry
-    add(
-        day(8),
-        Some(2),
-        "rule-proposal",
-        rule(
-            3,
-            "Streaming",
-            json!({"Shares": {"1": 1, "2": 2, "3": 1}}),
-            &["Subscriptions"],
-        ),
+    // a new rule proposed mid-month starts with the next period
+    let mut streaming = rule(
+        3,
+        "Streaming",
+        json!({"Shares": {"1": 1, "2": 2, "3": 1}}),
+        &["Subscriptions"],
     );
+    streaming["effective"] = json!(month
+        .checked_add_months(chrono::Months::new(1))
+        .unwrap_or(month));
+    add(day(8), Some(2), "rule-proposal", streaming);
     out
 }
 

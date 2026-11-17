@@ -94,8 +94,9 @@ own choice, else its category's default, else the agreement's fallback.
 - An entry tagged to a special event counts only in the event (its date must be inside the
   event); otherwise it counts in the period containing its date.
 - Recurring bills use the same schedules: their due dates are the schedule's starts.
-- A period that has ended is ready to close; late entries are accepted for a grace period
-  (default 7 days, a book setting).
+- A period that has ended is ready to close; late entries (new expenses and payments dated
+  in it) are accepted for a grace period after its end (default 7 days, a book setting),
+  then refused with a message to date them in the current period.
 
 ## Joining and leaving
 

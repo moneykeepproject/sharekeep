@@ -879,3 +879,99 @@ fn a_books_days_are_counted_in_its_time_zone() {
         .unwrap_err()
         .contains("chosen when it is made"));
 }
+
+#[test]
+fn late_entries_have_a_grace_and_rules_dont_reach_back() {
+    let mut b = household();
+    approved_rule(&mut b, equal_rule(1, "Shared", "2027-01-01", &[]));
+    // January ended; 7 days' grace (the default)
+    b.add(
+        day(2, 5),
+        Some(SAM),
+        "expense",
+        expense("2027-01-30", 900, SAM, "Late"),
+    );
+    let e = b
+        .try_add(
+            day(2, 9),
+            Some(SAM),
+            "expense",
+            expense("2027-01-30", 900, SAM, "Too late"),
+        )
+        .unwrap_err();
+    assert!(e.contains("more than the book's 7 days"), "{e}");
+    // a rule can't start in a period that ended, nor change mid-period while in force
+    assert!(b
+        .try_add(
+            day(2, 9),
+            Some(JERRY),
+            "rule-proposal",
+            equal_rule(2, "Back", "2027-01-01", &[])
+        )
+        .unwrap_err()
+        .contains("ended"));
+    assert!(b
+        .try_add(
+            day(2, 9),
+            Some(JERRY),
+            "rule-proposal",
+            equal_rule(1, "Shared", "2027-02-09", &[])
+        )
+        .unwrap_err()
+        .contains("next period"));
+    // a new rule may start this period; a change to one in force starts with the next
+    b.add(
+        day(2, 9),
+        Some(JERRY),
+        "rule-proposal",
+        equal_rule(2, "New", "2027-02-01", &["Garden"]),
+    );
+    b.add(
+        day(2, 9),
+        Some(JERRY),
+        "rule-proposal",
+        equal_rule(1, "Shared", "2027-03-01", &[]),
+    );
+}
+
+#[test]
+fn coming_back_keeps_the_first_stay() {
+    let mut b = household();
+    approved_rule(&mut b, equal_rule(1, "Shared", "2027-01-01", &[]));
+    let p = b.add(
+        day(1, 10),
+        Some(ALEX),
+        "member-leave",
+        json!({"agreement": 1, "member": ALEX, "date": "2027-01-10"}),
+    );
+    for m in [JERRY, SAM] {
+        b.add(
+            day(1, 10),
+            Some(m),
+            "approval",
+            json!({"proposal": p, "approve": true}),
+        );
+    }
+    assert!(b
+        .try_add(
+            day(1, 12),
+            Some(JERRY),
+            "member-join",
+            json!({"agreement": 1, "member": ALEX, "date": "2027-01-09"})
+        )
+        .is_err());
+    b.add(
+        day(1, 20),
+        Some(JERRY),
+        "member-join",
+        json!({"agreement": 1, "member": ALEX, "date": "2027-01-20"}),
+    );
+    let ag = &b.ledger.agreements[&A];
+    let d = |n| chrono::NaiveDate::from_ymd_opt(2027, 1, n).unwrap();
+    assert!(
+        ag.active_on(d(5)).contains(&MemberId(ALEX)),
+        "the first stay still counts"
+    );
+    assert!(!ag.active_on(d(15)).contains(&MemberId(ALEX)));
+    assert!(ag.active_on(d(25)).contains(&MemberId(ALEX)));
+}

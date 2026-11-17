@@ -114,7 +114,10 @@ shared by the members' stakes. Replaying the history gives the same amounts.
 
 ## When a new rule starts
 
-A rule proposal starts with the next period, so a period is never divided two ways. The
+A rule proposal starts with the next period, so a period is never divided two ways; the
+engine refuses a rule starting in a period that has ended, and a change to a rule in force
+today that starts before the next period. A member who left and comes back keeps their
+earlier stay (`past_stays`); the new one starts after the day they left. The
 exception is while no rule is in force today (an agreement's first rule, or a first rule that
 starts later): then the proposal applies from the current period (`sk_view::view::
 proposal_target`), as an earlier version of the default rule when there is one, so today's
