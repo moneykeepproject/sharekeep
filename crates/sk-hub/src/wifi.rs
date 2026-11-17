@@ -762,10 +762,13 @@ pub type Peers = Arc<Mutex<HashMap<u16, Peer>>>;
 
 /// How long an unauthenticated request may take to send its body.
 pub const UNAUTH_BODY_TIMEOUT: Duration = Duration::from_secs(10);
-/// Unauthenticated requests handled at once, in all.
-pub const MAX_UNAUTH: usize = 4;
+/// Unauthenticated requests with a body (pairing) handled at once, in all: fewer than the
+/// request handler's workers, so paired devices always get one (review M1).
+pub const MAX_UNAUTH: usize = 2;
 /// Unauthenticated requests handled at once from one address.
-pub const MAX_UNAUTH_PER_ADDRESS: usize = 2;
+pub const MAX_UNAUTH_PER_ADDRESS: usize = 1;
+/// Connections at once from one address, on each listener.
+pub const MAX_PER_ADDRESS: usize = 8;
 /// The TLS handshake must be done in this time.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -873,6 +876,7 @@ pub fn accept_loop(
     gone: Arc<AtomicBool>,
 ) {
     let active = Arc::new(AtomicUsize::new(0));
+    let per = Arc::new(Mutex::new(HashMap::<IpAddr, usize>::new()));
     if listener.set_nonblocking(true).is_err() {
         return;
     }
@@ -883,11 +887,16 @@ pub fn accept_loop(
                     drop(tcp);
                     continue;
                 }
+                let Some(slot) = Slot::take(&per, peer.ip()) else {
+                    drop(tcp);
+                    continue;
+                };
                 active.fetch_add(1, Ordering::SeqCst);
                 let (config, peers, act) = (config.clone(), peers.clone(), active.clone());
                 let spawned = std::thread::Builder::new()
                     .name("hub-tls".into())
                     .spawn(move || {
+                        let _slot = slot;
                         let _ = relay(tcp, peer, &config, backend, &peers);
                         act.fetch_sub(1, Ordering::SeqCst);
                     });
@@ -901,6 +910,111 @@ pub fn accept_loop(
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     }
+}
+
+/// One connection's place in the per-address count; given back when dropped.
+struct Slot {
+    per: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    ip: IpAddr,
+}
+
+impl Slot {
+    fn take(per: &Arc<Mutex<HashMap<IpAddr, usize>>>, ip: IpAddr) -> Option<Slot> {
+        let mut m = per.lock().ok()?;
+        let n = m.entry(ip).or_default();
+        if *n >= MAX_PER_ADDRESS {
+            return None;
+        }
+        *n += 1;
+        Some(Slot {
+            per: per.clone(),
+            ip,
+        })
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if let Ok(mut m) = self.per.lock() {
+            if let Some(n) = m.get_mut(&self.ip) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    m.remove(&self.ip);
+                }
+            }
+        }
+    }
+}
+
+/// The certificate page's connections at once, in all.
+const MAX_HELPER: usize = 32;
+/// A certificate-page connection that sends or takes nothing for this long is closed.
+const HELPER_IDLE: Duration = Duration::from_secs(15);
+
+/// The certificate page (plain HTTP on the home network) through a small front: at most
+/// [`MAX_HELPER`] connections, [`MAX_PER_ADDRESS`] from one address, each closed after
+/// [`HELPER_IDLE`] without traffic, passed to the page's own server on `backend` (review M1:
+/// idle connections each held a thread, without limit).
+pub fn helper_loop(listener: TcpListener, backend: SocketAddr, stopping: Arc<AtomicBool>) {
+    let active = Arc::new(AtomicUsize::new(0));
+    let per = Arc::new(Mutex::new(HashMap::<IpAddr, usize>::new()));
+    if listener.set_nonblocking(true).is_err() {
+        return;
+    }
+    while !stopping.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((tcp, peer)) => {
+                if active.load(Ordering::SeqCst) >= MAX_HELPER {
+                    drop(tcp);
+                    continue;
+                }
+                let Some(slot) = Slot::take(&per, peer.ip()) else {
+                    drop(tcp);
+                    continue;
+                };
+                active.fetch_add(1, Ordering::SeqCst);
+                let act = active.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("hub-cert-front".into())
+                    .spawn(move || {
+                        let _slot = slot;
+                        let _ = pipe(tcp, backend);
+                        act.fetch_sub(1, Ordering::SeqCst);
+                    });
+                if spawned.is_err() {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    }
+}
+
+/// Bytes both ways between a certificate-page visitor and the page's server, until either
+/// side closes or nothing moves for [`HELPER_IDLE`].
+fn pipe(outer: TcpStream, backend: SocketAddr) -> std::io::Result<()> {
+    outer.set_nonblocking(false)?;
+    outer.set_read_timeout(Some(HELPER_IDLE))?;
+    outer.set_write_timeout(Some(HELPER_IDLE))?;
+    let inner = TcpStream::connect_timeout(&backend, Duration::from_secs(5))?;
+    inner.set_read_timeout(Some(HELPER_IDLE))?;
+    inner.set_write_timeout(Some(HELPER_IDLE))?;
+    let (mut from_in, mut to_out) = (inner.try_clone()?, outer.try_clone()?);
+    let back = std::thread::Builder::new()
+        .name("hub-cert-back".into())
+        .spawn(move || {
+            let _ = std::io::copy(&mut from_in, &mut to_out);
+            let _ = to_out.shutdown(Shutdown::Write);
+        })?;
+    let (mut from_out, mut to_in) = (outer.try_clone()?, inner.try_clone()?);
+    let _ = std::io::copy(&mut from_out, &mut to_in);
+    let _ = inner.shutdown(Shutdown::Both);
+    let _ = back.join();
+    let _ = outer.shutdown(Shutdown::Both);
+    Ok(())
 }
 
 type Shared = Arc<Mutex<(rustls::ServerConnection, TcpStream)>>;

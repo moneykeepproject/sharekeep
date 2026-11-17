@@ -10,10 +10,15 @@ pairing code copied from MoneyKeep).
   its data folder (`books/`). Creating a book takes a name only: no file dialog.
 - **Listeners** (ShareKeep's own, apart from MoneyKeep's capture server on 14443/14080):
   - devices: HTTPS on `<hub address>:15443`, TLS (rustls) relayed to a private loopback
-    HTTP server;
+    HTTP server (4 workers); at most 64 connections, 8 from one address; a request must
+    arrive within 10 s until it carries a device token; a request without a token that sends
+    a body (pairing) first takes one of 2 places (1 per address), so guests never hold the
+    workers paired devices need; refused ones are closed and answered 503;
   - the certificate page: plain HTTP on `<hub address>:15080` — `/` (steps for Android,
     iPhone/iPad and computers, the fingerprint), `/sharekeep-ca.crt`,
-    `/sharekeep-ca.mobileconfig`; anything else redirects to HTTPS;
+    `/sharekeep-ca.mobileconfig`; anything else redirects to HTTPS. A small front passes
+    it to its own loopback server: at most 32 connections, 8 from one address, each closed
+    after 15 s without traffic;
   - the hub computer's desktop app: plain HTTP on `127.0.0.1:15081`, with the admin token
     from the data folder.
 - **Certificate authority** (copied from MoneyKeep): ECDSA P-256, 10 years, name-constrained

@@ -1238,3 +1238,71 @@ fn a_statement_that_couldnt_be_saved_is_made_later_from_the_history() {
     let seals = records(&h).iter().filter(|r| r["kind"] == "seal").count();
     assert_eq!(seals, 1);
 }
+
+/// A TLS connection to the hub that sends a request's headers and then nothing.
+fn stalled_pairing(h: &Hub) -> rustls::StreamOwned<rustls::ClientConnection, TcpStream> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(rustls::pki_types::CertificateDer::from(
+            h.r().ca_der.clone(),
+        ))
+        .unwrap();
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1".to_string()).unwrap();
+    let conn = rustls::ClientConnection::new(Arc::new(config), name).unwrap();
+    let tcp = TcpStream::connect(h.r().https).unwrap();
+    let mut s = rustls::StreamOwned::new(conn, tcp);
+    s.write_all(b"POST /api/v1/pair HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 5000\r\n\r\n")
+        .unwrap();
+    s.flush().unwrap();
+    s
+}
+
+#[test]
+fn a_guest_cant_stall_the_hub_for_paired_devices() {
+    let h = hub();
+    let (book, _) = household(&h, false, None);
+    let code = pairing_code(&h, &book, 2);
+    let (sam, _) = Client::pair(h.address(), &code, PIN, "Sam's phone").unwrap();
+    // a guest opens connections that send a pairing request's headers and never its body
+    let held: Vec<_> = (0..6).map(|_| stalled_pairing(&h)).collect();
+    std::thread::sleep(Duration::from_millis(500));
+    let started = std::time::Instant::now();
+    sam.submit_now("expense", &expense(100, 2)).unwrap();
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(2),
+        "a paired device waited {took:?}"
+    );
+    drop(held);
+
+    // the certificate page: one address gets a few connections at once, not hundreds
+    let idle: Vec<TcpStream> = (0..40)
+        .map(|_| TcpStream::connect(h.r().helper).unwrap())
+        .collect();
+    std::thread::sleep(Duration::from_millis(500));
+    let open = idle
+        .iter()
+        .filter(|c| {
+            let mut b = [0u8; 1];
+            c.set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            // a refused connection reads its end at once; an open one times out
+            !matches!((&**c).read(&mut b), Ok(0))
+        })
+        .count();
+    assert!(
+        open <= wifi::MAX_PER_ADDRESS,
+        "{open} idle connections kept"
+    );
+    drop(idle);
+    std::thread::sleep(Duration::from_millis(300));
+    let (s, _) = raw_http(h.r().helper, "GET", "/", None, None, "test");
+    assert_eq!(s, 200);
+}
