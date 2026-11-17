@@ -12,8 +12,9 @@ pairing code copied from MoneyKeep).
   - devices: HTTPS on `<hub address>:15443`, TLS (rustls) relayed to a private loopback
     HTTP server (4 workers); at most 64 connections, 8 from one address; a request must
     arrive within 10 s until it carries a device token; a request without a token that sends
-    a body (pairing) first takes one of 2 places (1 per address), so guests never hold the
-    workers paired devices need; refused ones are closed and answered 503;
+    a body (pairing) first takes one of 2 places (1 per address) in the TLS relay, which
+    reads the request's head before anything reaches the request handler, so guests never
+    hold the workers paired devices need; a refused one is answered 503 by the relay and closed;
   - the certificate page: plain HTTP on `<hub address>:15080` — `/` (steps for Android,
     iPhone/iPad and computers, the fingerprint), `/sharekeep-ca.crt`,
     `/sharekeep-ca.mobileconfig`; anything else redirects to HTTPS. The page (and the steps

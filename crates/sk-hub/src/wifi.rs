@@ -772,6 +772,23 @@ pub const MAX_UNAUTH: usize = 2;
 pub const MAX_UNAUTH_PER_ADDRESS: usize = 1;
 /// Connections at once from one address, on each listener.
 pub const MAX_PER_ADDRESS: usize = 8;
+/// The largest request head read before deciding about the gate.
+const MAX_HEAD: usize = 16 * 1024;
+
+/// A request without a device token that sends a body (anything but GET or HEAD).
+fn needs_gate(head: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(head);
+    let mut lines = text.split("\r\n");
+    let first = lines.next().unwrap_or("");
+    if first.starts_with("GET ") || first.starts_with("HEAD ") {
+        return false;
+    }
+    !lines.any(|l| {
+        l.split_once(':').is_some_and(|(k, v)| {
+            k.trim().eq_ignore_ascii_case("authorization") && v.trim().starts_with("Bearer ")
+        })
+    })
+}
 /// The TLS handshake must be done in this time.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -875,6 +892,7 @@ pub fn accept_loop(
     config: Arc<rustls::ServerConfig>,
     backend: SocketAddr,
     peers: Peers,
+    gate: Arc<Gate>,
     stopping: Arc<AtomicBool>,
     gone: Arc<AtomicBool>,
 ) {
@@ -895,12 +913,13 @@ pub fn accept_loop(
                     continue;
                 };
                 active.fetch_add(1, Ordering::SeqCst);
-                let (config, peers, act) = (config.clone(), peers.clone(), active.clone());
+                let (config, peers, act, gate) =
+                    (config.clone(), peers.clone(), active.clone(), gate.clone());
                 let spawned = std::thread::Builder::new()
                     .name("hub-tls".into())
                     .spawn(move || {
                         let _slot = slot;
-                        let _ = relay(tcp, peer, &config, backend, &peers);
+                        let _ = relay(tcp, peer, &config, backend, &peers, &gate);
                         act.fetch_sub(1, Ordering::SeqCst);
                     });
                 if spawned.is_err() {
@@ -1042,6 +1061,7 @@ fn relay(
     config: &Arc<rustls::ServerConfig>,
     backend: SocketAddr,
     peers: &Peers,
+    gate: &Arc<Gate>,
 ) -> std::io::Result<()> {
     tcp.set_nonblocking(false)?;
     tcp.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
@@ -1056,6 +1076,50 @@ fn relay(
         }
         conn.complete_io(&mut t)?;
     }
+    // The first request's head, before anything reaches the request handler: one without a
+    // device token that sends a body (pairing) takes a place at the gate first, or is
+    // answered "busy" here, so guests never hold the handler's workers (review M1).
+    let mut head: Vec<u8> = Vec::new();
+    {
+        tcp.set_read_timeout(Some(UNAUTH_BODY_TIMEOUT))?;
+        let mut buf = vec![0u8; 16 * 1024];
+        let until = Instant::now() + UNAUTH_BODY_TIMEOUT;
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() < MAX_HEAD {
+            match conn.reader().read(&mut buf) {
+                Ok(0) => return Ok(()),
+                Ok(k) => head.extend_from_slice(buf.get(..k).unwrap_or(&[])),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= until {
+                        return Err(io_err("the request took too long"));
+                    }
+                    if conn.complete_io(&mut t)?.0 == 0 && !conn.wants_read() {
+                        return Ok(());
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    let _ticket = if needs_gate(&head) {
+        match gate.admit(peer.ip()) {
+            Some(t) => Some(t),
+            None => {
+                let body = br#"{"error":"The hub is busy: try again in a moment."}"#;
+                let answer = format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = conn.writer().write_all(answer.as_bytes());
+                let _ = conn.writer().write_all(body);
+                conn.send_close_notify();
+                let _ = flush(&mut conn, &mut t);
+                let _ = tcp.shutdown(Shutdown::Both);
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
     tcp.set_read_timeout(Some(IDLE))?;
     let inner = TcpStream::connect_timeout(&backend, Duration::from_secs(5))?;
     inner.set_read_timeout(Some(IDLE))?;
@@ -1073,7 +1137,7 @@ fn relay(
         );
     }
     // Data the phone sent with the end of the handshake is already decrypted.
-    let mut early: Vec<u8> = Vec::new();
+    let mut early: Vec<u8> = head;
     {
         let mut buf = vec![0u8; 64 * 1024];
         loop {

@@ -264,9 +264,6 @@ struct Shared {
     helper: SocketAddr,
     host: String,
     peers: wifi::Peers,
-    /// Places for requests without a device token that send a body (pairing): fewer than
-    /// the workers, at most one per address (review M1).
-    gate: Arc<wifi::Gate>,
     stopping: Arc<AtomicBool>,
 }
 
@@ -496,7 +493,6 @@ pub fn start(opts: HubOptions) -> StoreResult<Running> {
         https,
         helper: helper_addr,
         peers: peers.clone(),
-        gate: wifi::Gate::new(),
         stopping: stopping.clone(),
     });
 
@@ -531,8 +527,9 @@ pub fn start(opts: HubOptions) -> StoreResult<Running> {
     {
         let (peers, stop) = (peers.clone(), stopping.clone());
         let gone = Arc::new(AtomicBool::new(false));
+        let gate = wifi::Gate::new();
         threads.push(spawn("hub-tls", move || {
-            wifi::accept_loop(listener, tls, backend_addr, peers, stop, gone)
+            wifi::accept_loop(listener, tls, backend_addr, peers, gate, stop, gone)
         })?);
     }
     {
@@ -870,25 +867,8 @@ fn handle_device(shared: &Shared, mut req: Request) {
     let path = url.split('?').next().unwrap_or("").to_string();
     let method = req.method().as_str().to_string();
     let remote_port = req.remote_addr().map(|a| a.port());
-    // a request without a device token that sends a body waits for a place first, so guests
-    // can't hold every worker waiting on bodies that never come (review M1)
-    let _ticket = if method != "GET" && bearer(&req).is_none() {
-        let ip = remote_port
-            .and_then(|p| wifi::peer_ip(&shared.peers, p))
-            .or_else(|| req.remote_addr().map(|a| a.ip()));
-        match ip.and_then(|ip| shared.gate.admit(ip)) {
-            Some(t) => Some(t),
-            None => {
-                // close it first: answering would otherwise wait for the body
-                if let Some(p) = remote_port {
-                    wifi::close_peer(&shared.peers, p);
-                }
-                return fail(shared, req, 503, "The hub is busy: try again in a moment.");
-            }
-        }
-    } else {
-        None
-    };
+    // (a request without a device token that sends a body was let through the relay's gate
+    // first: wifi::relay, review M1)
     match (method.as_str(), path.as_str()) {
         ("GET", "/api/v1/health") => send(
             shared,
