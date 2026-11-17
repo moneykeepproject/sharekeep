@@ -2,12 +2,18 @@ target/
 *.pdf
 *.bundle
 dist/
-dist/
 
-# Book side files (security-review-1 L10): the previous version kept on save and
-# half-written temporary copies.
-*.moneykeep.prev
-*.moneykeep.tmp-*
+# Books and their side files: the previous version kept on save, half-written temporary
+# copies, a broken book set aside (review L15).
+*.sharekeep
+*.sharekeep.prev
+*.sharekeep.tmp-*
+*.sharekeep-broken
+
+# A hub's data folder from a local run: books, the admin token, the device list (review L15).
+hubdata/
+hub.sqlite
+admin.token
 
 # Keys and certificates are never committed (security-review-1 L10).
 *.pfx

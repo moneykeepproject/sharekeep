@@ -1481,6 +1481,17 @@ fn csv_field(s: &str) -> String {
     }
 }
 
+/// People's own words (names, categories, notes) in a spreadsheet: a cell a spreadsheet would
+/// read as a formula (starting with = + - @, a tab or a return) gets a leading apostrophe, so
+/// it shows as the text it is (review L1). Amounts are written by [`csv_cents`] and stay numbers.
+fn csv_text(s: &str) -> String {
+    if s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    }
+}
+
 fn csv_cents(v: Cents) -> String {
     let sign = if v < 0 { "-" } else { "" };
     format!("{sign}{}.{:02}", v.abs() / 100, v.abs() % 100)
@@ -1668,21 +1679,21 @@ pub fn csv(
         "Note".into(),
     ];
     for p in &sheet.people {
-        head_row.push(format!("{p} change"));
+        head_row.push(csv_text(&format!("{p} change")));
     }
     for p in &sheet.people {
-        head_row.push(format!("{p} balance"));
+        head_row.push(csv_text(&format!("{p} balance")));
     }
     let mut out = line(head_row);
     for r in &sheet.rows {
         let mut cols = vec![
             r.date.to_string(),
             r.seq.map(|s| s.to_string()).unwrap_or_default(),
-            r.what.clone(),
-            r.category.clone(),
-            r.by.clone(),
+            csv_text(&r.what),
+            csv_text(&r.category),
+            csv_text(&r.by),
             r.amount.map(csv_cents).unwrap_or_default(),
-            r.note.clone(),
+            csv_text(&r.note),
         ];
         for c in &r.change {
             cols.push(if *c == 0 {

