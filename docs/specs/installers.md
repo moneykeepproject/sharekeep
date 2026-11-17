@@ -18,13 +18,21 @@ order), the signing rules and the checksums are MoneyKeep's, and the setup follo
   (off; on when this computer already is the hub, or with `/HUB`);
 - ShareKeep open: asks to close it (Retry / Cancel); silently, asks it to close (taskkill without
   /F), waits up to 30 s, then stops with exit code 2;
-- the hub: `net stop` (which waits) before its program is replaced; the first time,
+- the hub: `net stop` (which waits) before its program is replaced; then
+  `sharekeep-hub prepare --data …`: a data folder that is already there is used only if it and
+  everything in it belong to Administrators, SYSTEM or a service account and nothing in it is a
+  link or junction; otherwise it is renamed `… (set aside <date> <n>)` and never read (any
+  user can create a folder in `%ProgramData%` before ShareKeep is installed); if it can't be
+  moved the hub option stops with a message. The first time,
   `sharekeep-hub setup --data "%ProgramData%\ShareKeep Hub" --address auto`; then
   `sharekeep-hub install --data … --user <DOMAIN\user>`: `sc.exe` registers the service
   `ShareKeepHub` under its own virtual account `NT SERVICE\ShareKeepHub` (never LocalSystem),
-  restarting on failure; `icacls.exe` locks the folder (Administrators own it; SYSTEM and
-  Administrators full control; the service modify; the installing user may read `admin.token` and
-  `hub.json` for the app's Hub tab); `netsh.exe` opens TCP 15443 and 15080 on private and domain
+  restarting on failure; `icacls.exe` locks the folder (Administrators own everything in it;
+  `/reset` removes every permission anyone put on anything inside; the folder passes down only
+  SYSTEM and Administrators full control and the service modify; the installing user may read
+  `admin.token` and `hub.json` for the app's Hub tab; `/L` everywhere, so a link is never
+  followed). The desktop app believes `admin.token` only if the folder and both files belong to
+  Administrators, SYSTEM or a service; `netsh.exe` opens TCP 15443 and 15080 on private and domain
   networks; the service starts. An update keeps the certificate, so devices stay paired;
 - the hub option turned off on a hub computer: its service and firewall rule are removed, the
   books stay;
@@ -55,9 +63,13 @@ Slint Royalty-free License 2.0 asks (NOTICE).
 `sharekeep-<version>-macos-<arch>.dmg` holds `ShareKeep.app` (both programs inside, signed ad hoc
 until there is a Developer ID) and **Install the household hub.command**, which runs
 `sharekeep-hub setup` as the user (data in `~/Library/Application Support/ShareKeep Hub`,
-owner-only) and then, with sudo, `sharekeep-hub install`: a launchd daemon
-(`/Library/LaunchDaemons/org.moneykeep.sharekeep-hub.plist`) that runs **as that user**, not root,
-starts at boot and restarts if it stops.
+owner-only) and then writes launchd's file itself (the same file as
+`sk_hub::service::macos_plist`; a test compares them) and, with sudo, only places it
+(`/usr/bin/install -o root -g wheel -m 644` to
+`/Library/LaunchDaemons/org.moneykeep.sharekeep-hub.plist`) and runs `launchctl`: nothing of
+ShareKeep's runs as root (its programs are in an app the user owns). The daemon runs **as that
+user**, starts at boot and restarts if it stops. **Stop the household hub.command** removes it
+(the books stay). `sharekeep-hub install`/`uninstall` on a Mac only point to the two scripts.
 
 ## Keys
 

@@ -27,8 +27,21 @@ fn arg(name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-/// The hub's admin port and token, when this computer runs the hub.
+/// The hub's admin port and token, when this computer runs the hub. On Windows the folder
+/// and both files must belong to the administrators (or the hub's service): an ordinary
+/// program can make a folder of that name in `%ProgramData%`, and the app would then send the
+/// PIN and a book's password to whatever it names (review H2).
 fn hub_admin(data: &Path) -> Option<(SocketAddr, String)> {
+    for p in [
+        data.to_path_buf(),
+        data.join("admin.token"),
+        data.join("hub.json"),
+    ] {
+        if let Err(why) = sk_client::owner::protected(&p) {
+            eprintln!("Not using the hub folder: {why}");
+            return None;
+        }
+    }
     let token = std::fs::read_to_string(data.join("admin.token")).ok()?;
     let port = std::fs::read(data.join("hub.json"))
         .ok()

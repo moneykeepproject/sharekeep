@@ -298,6 +298,19 @@ Section /o "Desktop shortcut" SecDesktop
 SectionEnd
 
 Section /o "Household hub on this computer" SecHub
+  ; a data folder that isn't the hub's own (anything in it owned by someone other than the
+  ; administrators, SYSTEM or a service, or a link) is moved aside, never trusted (review H2)
+  DetailPrint "Checking the household hub's folder"
+  nsExec::ExecToLog `"$INSTDIR\${HUB_EXE}" prepare --data "$HubData"`
+  Pop $1
+  ${If} $1 != 0
+    MessageBox MB_OK|MB_ICONEXCLAMATION "The household hub's folder ($HubData) wasn't made by ShareKeep's setup and can't be moved aside. The details are in the list above. Move or delete that folder, then run this setup again." /SD IDOK
+    ${If} ${Silent}
+      SetErrorLevel ${EXIT_FAILED}
+      Quit
+    ${EndIf}
+    Goto hubdone
+  ${EndIf}
   ; first time only: an existing hub keeps its certificate (devices stay paired) and its books
   ${IfNot} ${FileExists} "$HubData\hub.json"
     DetailPrint "Setting up the household hub"

@@ -19,9 +19,9 @@ getrandom.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 
-# DPAPI, to seal secrets before they are written (seal.rs).
+# DPAPI, to seal secrets before they are written (seal.rs); file owners (owner.rs).
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Security_Authorization"] }
 
 [dev-dependencies]
 tempfile.workspace = true

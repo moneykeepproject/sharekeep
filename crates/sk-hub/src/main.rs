@@ -93,9 +93,14 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "install" => install(&data, arg(&args, "--user")),
+        "prepare" => {
+            let ms = sk_hub::util::now_ms();
+            let stamp = format!("{} {}", sk_ledger::day_of(ms), ms / 1000);
+            service::prepare_data(&data, &stamp).map(|said| println!("{said}"))
+        }
         "service-run" => service_run(data),
         _ => Err(
-            "usage: sharekeep-hub <setup|run|status|install|uninstall|service-run> --data <folder> …"
+            "usage: sharekeep-hub <prepare|setup|run|status|install|uninstall|service-run> --data <folder> …"
                 .into(),
         ),
     }
@@ -104,6 +109,10 @@ fn run() -> Result<(), String> {
 fn echo(line: &str) {
     println!("{line}");
 }
+
+/// On a Mac, ShareKeep's own program never runs as root (review H3): the disk image's two
+/// scripts place and remove launchd's file themselves.
+const MAC_INSTALL: &str = "On a Mac, open \"Install the household hub\" (or \"Stop the household hub\") from the ShareKeep disk image: they register the hub with launchd without running ShareKeep as root.";
 
 /// Register the hub to run in the background and start it.
 fn install(data: &Path, user: Option<String>) -> Result<(), String> {
@@ -116,69 +125,18 @@ fn install(data: &Path, user: Option<String>) -> Result<(), String> {
         let steps = service::windows_install(&exe, data, &user, (cfg.https_port, cfg.helper_port));
         service::run_steps(&steps, &echo)
     } else if cfg!(target_os = "macos") {
-        install_mac(&exe, data, user)
+        let _ = (exe, user);
+        Err(MAC_INSTALL.into())
     } else {
         Err("On Linux, run `sharekeep-hub run --data <folder>` from a systemd unit.".into())
     }
-}
-
-#[cfg(unix)]
-fn install_mac(exe: &Path, data: &Path, user: Option<String>) -> Result<(), String> {
-    // run with sudo by the person installing: the daemon runs as them
-    let user = user
-        .or_else(|| std::env::var("SUDO_USER").ok())
-        .ok_or("--user <installing user> is needed (or run it with sudo)")?;
-    let plist = service::macos_plist(exe, data, &user);
-    let path = service::macos_plist_path();
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("system/{}", service::LAUNCHD_LABEL)])
-        .output();
-    std::fs::write(&path, plist)
-        .map_err(|e| format!("{path} can't be written ({e}). Use sudo."))?;
-    // the data folder and everything in it belong to the user, owner-only
-    if let (Ok(uid), Ok(gid)) = (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) {
-        let (uid, gid) = (uid.parse().ok(), gid.parse().ok());
-        chown_tree(data, uid, gid)?;
-    }
-    service::run_steps(
-        &[vec![
-            "launchctl".into(),
-            "bootstrap".into(),
-            "system".into(),
-            path.clone(),
-        ]],
-        &echo,
-    )
-}
-
-#[cfg(unix)]
-fn chown_tree(p: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
-    std::os::unix::fs::chown(p, uid, gid).map_err(|e| format!("{}: {e}", p.display()))?;
-    if p.is_dir() {
-        for e in std::fs::read_dir(p).map_err(|e| e.to_string())?.flatten() {
-            chown_tree(&e.path(), uid, gid)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn install_mac(_: &Path, _: &Path, _: Option<String>) -> Result<(), String> {
-    Err("not a Mac".into())
 }
 
 fn uninstall(_data: Option<&Path>) -> Result<(), String> {
     if cfg!(windows) {
         service::run_steps(&service::windows_uninstall(), &echo)
     } else if cfg!(target_os = "macos") {
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &format!("system/{}", service::LAUNCHD_LABEL)])
-            .output();
-        match std::fs::remove_file(service::macos_plist_path()) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("{e}. Use sudo.")),
-        }
+        Err(MAC_INSTALL.into())
     } else {
         Ok(())
     }

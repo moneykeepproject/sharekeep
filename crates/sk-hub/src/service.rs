@@ -70,8 +70,11 @@ pub fn windows_install(exe: &Path, data: &Path, user: &str, ports: (u16, u16)) -
             "actions=",
             "restart/5000/restart/5000/restart/60000",
         ]),
-        // the folder: owned by Administrators, no inherited permissions; SYSTEM and
-        // administrators full, the service modify, everyone else nothing
+        // the folder: owned by Administrators; every permission anyone put on anything in
+        // it removed (`/reset`: only what the folder passes down remains), then the folder
+        // itself passes down only SYSTEM and administrators full, the service modify.
+        // `/L` works on a link itself, never on what it points to (`prepare` refuses links
+        // anyway).
         vec![
             "icacls.exe".into(),
             data_s.clone(),
@@ -79,6 +82,15 @@ pub fn windows_install(exe: &Path, data: &Path, user: &str, ports: (u16, u16)) -
             "*S-1-5-32-544".into(),
             "/T".into(),
             "/C".into(),
+            "/L".into(),
+        ],
+        vec![
+            "icacls.exe".into(),
+            data_s.clone(),
+            "/reset".into(),
+            "/T".into(),
+            "/C".into(),
+            "/L".into(),
         ],
         vec![
             "icacls.exe".into(),
@@ -90,8 +102,8 @@ pub fn windows_install(exe: &Path, data: &Path, user: &str, ports: (u16, u16)) -
             "*S-1-5-32-544:(OI)(CI)F".into(),
             "/grant:r".into(),
             format!("{account}:(OI)(CI)M"),
-            "/T".into(),
             "/C".into(),
+            "/L".into(),
         ],
         // the installing user: list the folder (this folder only), read two files
         vec![
@@ -136,6 +148,36 @@ pub fn windows_install(exe: &Path, data: &Path, user: &str, ports: (u16, u16)) -
         ],
         step(&["sc.exe", "start", SERVICE_NAME]),
     ]
+}
+
+/// Before the elevated setup trusts a data folder that is already there: everything in it must
+/// belong to the administrators, SYSTEM or a service, and nothing in it may be a link (review
+/// H2: any user can create a folder in `%ProgramData%` before ShareKeep is installed). A
+/// folder that fails is renamed aside, never used or deleted, and the hub starts fresh.
+/// Answers what was done, for the setup's log.
+pub fn prepare_data(data: &Path, stamp: &str) -> Result<String, String> {
+    if std::fs::symlink_metadata(data).is_err() {
+        return Ok(format!("{} is new.", data.display()));
+    }
+    match sk_client::owner::protected_tree(data) {
+        Ok(()) => Ok(format!("{} is the hub's own.", data.display())),
+        Err(why) => {
+            let mut name = data.as_os_str().to_owned();
+            name.push(format!(" (set aside {stamp})"));
+            let aside = std::path::PathBuf::from(name);
+            std::fs::rename(data, &aside).map_err(|e| {
+                format!(
+                    "{} was not made by ShareKeep's setup ({why}) and can't be moved aside ({e}). Move or delete it, then run the setup again.",
+                    data.display()
+                )
+            })?;
+            Ok(format!(
+                "{} was not made by ShareKeep's setup ({why}): it was moved to {} and is not used.",
+                data.display(),
+                aside.display()
+            ))
+        }
+    }
 }
 
 /// Windows: removing the service and the firewall rule (the data stays).
@@ -306,7 +348,13 @@ mod tests {
         assert!(create.contains(&r"NT SERVICE\ShareKeepHub".to_string()));
         // owner first, then the permissions, then the user's two files, then start
         let pos = |needle: &str| flat.iter().position(|s| s.contains(needle)).unwrap();
-        assert!(pos("/setowner") < pos("/inheritance:r"));
+        assert!(pos("/setowner") < pos("/reset"));
+        assert!(pos("/reset") < pos("/inheritance:r"));
+        // every permission step works on links themselves, never their targets
+        assert!(steps
+            .iter()
+            .filter(|s| s[0] == "icacls.exe" && s.len() > 3 && s[2] != "/grant")
+            .all(|s| s.contains(&"/L".to_string())));
         assert!(pos("/inheritance:r") < pos(r"PC\jerry:(RX)"));
         assert!(flat
             .iter()
@@ -319,6 +367,63 @@ mod tests {
         assert_eq!(flat.last().unwrap(), "sc.exe start ShareKeepHub");
         assert!(may_fail(&steps[0]) && may_fail(&steps[1]));
         assert!(!may_fail(create));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_data_folder_with_a_link_in_it_is_set_aside() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("ShareKeep Hub");
+        assert!(prepare_data(&data, "x").unwrap().contains("is new"));
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("hub.json"), "{}").unwrap();
+        assert!(prepare_data(&data, "x").unwrap().contains("own"));
+        std::os::unix::fs::symlink("/etc", data.join("keys")).unwrap();
+        let said = prepare_data(&data, "20261116").unwrap();
+        assert!(said.contains("moved to"), "{said}");
+        assert!(!data.exists());
+        assert!(d
+            .path()
+            .join("ShareKeep Hub (set aside 20261116)")
+            .join("hub.json")
+            .exists());
+    }
+
+    /// The Mac's install script writes launchd's file itself (so nothing of ShareKeep's runs as
+    /// root): it must be the same file as [`macos_plist`].
+    #[test]
+    fn the_mac_install_script_writes_the_same_daemon_file() {
+        let script = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer/macos/install-hub.command"),
+        )
+        .unwrap();
+        let body = script
+            .split_once("<<PLIST\n")
+            .unwrap()
+            .1
+            .split_once("\nPLIST\n")
+            .unwrap()
+            .0;
+        let exe = "/Applications/ShareKeep.app/Contents/MacOS/sharekeep-hub";
+        let data = "/Users/jerry/Library/Application Support/ShareKeep Hub";
+        let from_script = format!("{body}\n")
+            .replace("$LABEL", LAUNCHD_LABEL)
+            .replace("$HUB_X", exe)
+            .replace("$DATA_X", data)
+            .replace("$LOG_X", &format!("{data}/{LOG_FILE}"))
+            .replace("$USER_X", "jerry");
+        assert_eq!(
+            from_script,
+            macos_plist(Path::new(exe), Path::new(data), "jerry")
+        );
+        assert!(script.contains(&format!("LABEL=\"{LAUNCHD_LABEL}\"")));
+        // root only places the file and starts launchd: never ShareKeep's own program
+        for line in script
+            .lines()
+            .filter(|l| l.trim_start().starts_with("sudo "))
+        {
+            assert!(!line.contains("$HUB"), "{line}");
+        }
     }
 
     #[test]
