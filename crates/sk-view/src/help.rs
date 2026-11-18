@@ -13,6 +13,23 @@ pub struct Faq {
 /// The questions, most asked first.
 pub const FAQ: &[Faq] = &[
     Faq {
+        id: "which-hub",
+        question: "Which computer should be the hub?",
+        answer: &[
+            "One computer in the household keeps the books: the hub. Pick one that stays on and stays on the home network, like a desktop. Every other phone and computer joins it.",
+            "Choose it once: when ShareKeep opens on a computer that isn't set up yet, it asks \"Join my household's hub\" or \"Make this computer the hub\". Make only one computer the hub.",
+        ],
+    },
+    Faq {
+        id: "launcher-hub",
+        question: "I installed from MoneyKeep Launcher and want this computer to be the hub",
+        answer: &[
+            "Open ShareKeep and choose Make this computer the hub. On Windows it asks once for administrator permission, then the hub runs in the background. On a Mac it opens Terminal, which asks for the Mac's password.",
+            "If ShareKeep already opened the joining steps, go back to the first screen with Back on step 1.",
+            "A computer that is already the hub can't join another household's hub. To stop being the hub: on Windows, run ShareKeep's setup again with \"Household hub on this computer\" turned off; on a Mac, open \"Stop the household hub\" from the disk image. The books stay.",
+        ],
+    },
+    Faq {
         id: "blank",
         question: "A phone shows “ShareKeep” at the top and nothing under it",
         answer: &[

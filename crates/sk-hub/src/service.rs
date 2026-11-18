@@ -180,6 +180,24 @@ pub fn prepare_data(data: &Path, stamp: &str) -> Result<String, String> {
     }
 }
 
+/// Windows: Setup's record of where the hub's data is (`HKLM\Software\ShareKeep\HubData`,
+/// 64-bit view), which later silent updates read.
+pub fn hub_data_registry(data: &Path) -> Step {
+    vec![
+        "reg.exe".into(),
+        "add".into(),
+        r"HKLM\Software\ShareKeep".into(),
+        "/v".into(),
+        "HubData".into(),
+        "/t".into(),
+        "REG_SZ".into(),
+        "/d".into(),
+        data.display().to_string(),
+        "/f".into(),
+        "/reg:64".into(),
+    ]
+}
+
 /// Windows: removing the service and the firewall rule (the data stays).
 pub fn windows_uninstall() -> Vec<Step> {
     vec![
@@ -430,6 +448,14 @@ mod tests {
         {
             assert!(!line.contains("$HUB"), "{line}");
         }
+        // the app bundle carries this same script, which the app opens in Terminal (0.1.4)
+        let dmg = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer/macos/make-dmg.sh"),
+        )
+        .unwrap();
+        assert!(dmg.contains(
+            r#"cp "$HERE/install-hub.command" "$HERE/uninstall-hub.command" "$APP/Contents/Resources/""#
+        ));
     }
 
     #[test]

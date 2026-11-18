@@ -65,6 +65,18 @@ jobs:
       - name: "Install again: the same certificate"
         run: ./scripts/ci/windows-install.ps1 -Scenario reinstall
 
+      - name: "Remove everything, books too"
+        run: ./scripts/ci/windows-install.ps1 -Scenario clean
+
+      - name: "Install as the launcher does (no hub)"
+        run: ./scripts/ci/windows-install.ps1 -Scenario plain
+
+      - name: "Make this computer the hub, as the app does"
+        run: ./scripts/ci/windows-install.ps1 -Scenario make-hub
+
+      - name: "Upgrade: the app's hub stays, with the same certificate"
+        run: ./scripts/ci/windows-install.ps1 -Scenario make-hub-upgrade
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

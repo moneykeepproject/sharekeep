@@ -292,6 +292,15 @@ export component AppWindow inherits Window {
     in property <bool> busy;
     // EZ Start: the step on screen (joining: 1–3; the hub computer: 1–5)
     in-out property <int> join-step: 1;
+    // 7: join a hub, or make this computer the hub (0.1.4)
+    in property <string> hub-offer-kind;   // "windows", "mac" or "no"
+    in property <string> hub-offer-note;   // why "no"
+    in property <string> hub-folder-note;  // a hub folder found here that can't be used
+    in-out property <int> make-hub-step: 0;  // 0 the choice, 1 what will happen
+    in-out property <bool> make-hub-busy;
+    in-out property <string> make-hub-error;
+    callback make-hub();
+    callback check-for-hub();
     in property <int> ez-step: 1;
     in property <int> ez-people;
 
@@ -521,7 +530,7 @@ export component AppWindow inherits Window {
                 spacing: 8px;
                 if root.page == 2: LinkButton { text: "‹ Back"; fg: white; clicked => { root.page = 1; } }
                 Text {
-                    text: root.page == 0 || root.page == 6 ? "EZ Start" : root.page == 2 ? root.agreement-name : root.book-name != "" ? root.book-name : "ShareKeep";
+                    text: root.page == 0 || root.page == 6 || root.page == 7 ? "EZ Start" : root.page == 2 ? root.agreement-name : root.book-name != "" ? root.book-name : "ShareKeep";
                     color: white;
                     font-size: 19px;
                     font-weight: 700;
@@ -529,7 +538,7 @@ export component AppWindow inherits Window {
                     horizontal-stretch: 1;
                     overflow: elide;
                 }
-                if root.page != 0 && root.page != 6: LinkButton { text: root.busy ? "Syncing…" : "Sync"; fg: white; clicked => { root.sync-now(); } }
+                if root.page != 0 && root.page != 6 && root.page != 7: LinkButton { text: root.busy ? "Syncing…" : "Sync"; fg: white; clicked => { root.sync-now(); } }
             }
         }
 
@@ -548,6 +557,7 @@ export component AppWindow inherits Window {
                     BigButton { text: root.busy ? "Looking…" : "Find the hub"; enabled: !root.busy && root.hub-address != ""; clicked => { root.check-hub(); } }
                     if root.connect-error != "": Text { text: root.connect-error; color: Theme.red; wrap: word-wrap; }
                 }
+                if root.join-step == 1 && !root.is-hub: LinkButton { text: "‹ Back: join a hub, or make this computer the hub"; fg: Theme.muted; clicked => { root.page = 7; root.make-hub-step = 0; } }
                 if root.join-step == 2: EzStep {
                     number: 2; total: 3;
                     title: "Check it's really your hub";
@@ -572,6 +582,38 @@ export component AppWindow inherits Window {
                     BigButton { text: root.busy ? "Pairing…" : "Pair this device"; enabled: !root.busy && root.connect-code != "" && root.connect-pin != "" && root.device-name != ""; clicked => { root.pair(); } }
                     if root.connect-error != "": Text { text: root.connect-error; color: Theme.red; wrap: word-wrap; }
                 }
+            }
+
+            // 7: the first question on a computer that isn't paired and isn't the hub (0.1.4)
+            if root.page == 7 && root.make-hub-step == 0: Page {
+                Text { text: "Welcome to ShareKeep"; font-size: 24px; font-weight: 700; color: Theme.ink; wrap: word-wrap; }
+                Hint { text: "One computer in the household keeps the books: the hub. Every other phone and computer joins it."; }
+                Card {
+                    SectionTitle { text: "Join my household's hub"; }
+                    Text { text: "Someone in your household already set up ShareKeep on another computer. This one connects to it."; color: Theme.ink; wrap: word-wrap; }
+                    BigButton { text: "Join my household's hub"; clicked => { root.join-step = 1; root.page = 0; } }
+                }
+                Card {
+                    SectionTitle { text: "Make this computer the hub"; }
+                    Text { text: "This computer keeps the household's books. It should stay on and on the home network. Choose this on one computer only."; color: Theme.ink; wrap: word-wrap; }
+                    if root.hub-offer-kind != "no": BigButton { text: "Make this computer the hub"; primary: false; clicked => { root.make-hub-error = ""; root.make-hub-step = 1; } }
+                    if root.hub-offer-kind == "no": Hint { text: root.hub-offer-note; }
+                    if root.hub-folder-note != "": Text { text: root.hub-folder-note; color: Theme.amber; wrap: word-wrap; }
+                }
+            }
+            if root.page == 7 && root.make-hub-step == 1: Page {
+                Text { text: "Make this computer the hub"; font-size: 24px; font-weight: 700; color: Theme.ink; wrap: word-wrap; }
+                Card {
+                    if root.hub-offer-kind == "windows": Text { text: "Windows will ask for administrator permission (the program is sharekeep-hub.exe). Then the hub runs in the background from now on, even when ShareKeep is closed."; color: Theme.ink; wrap: word-wrap; }
+                    if root.hub-offer-kind == "mac": Text { text: "Terminal opens \"Install the household hub\" and asks for this Mac's password, only to start the hub in the background. Come back here when it says it's done."; color: Theme.ink; wrap: word-wrap; }
+                    Hint { text: "First, give this computer a fixed address on your router (a DHCP reservation), so phones always find it."; }
+                    if root.hub-offer-kind == "windows": BigButton { text: root.make-hub-busy ? "Waiting for Windows…" : "Continue"; enabled: !root.make-hub-busy; clicked => { root.make-hub(); } }
+                    if root.hub-offer-kind == "mac" && !root.make-hub-busy: BigButton { text: "Open it in Terminal"; clicked => { root.make-hub(); } }
+                    if root.hub-offer-kind == "mac" && root.make-hub-busy: Hint { text: "Waiting for the hub to start… ShareKeep goes on by itself once it's running."; }
+                    if root.hub-offer-kind == "mac" && root.make-hub-busy: BigButton { text: "I've done it"; primary: false; clicked => { root.check-for-hub(); } }
+                    if root.make-hub-error != "": Text { text: root.make-hub-error; color: Theme.red; wrap: word-wrap; }
+                }
+                if !root.make-hub-busy || root.hub-offer-kind == "mac": LinkButton { text: "‹ Back"; fg: Theme.muted; clicked => { root.make-hub-step = 0; root.make-hub-busy = false; } }
             }
 
             // 6: EZ Start on the hub computer, one step at a time
@@ -1069,7 +1111,7 @@ export component AppWindow inherits Window {
 
         // ----- bottom tabs -----
         // EZ Start shows only its step: no tabs
-        if root.page != 0 && root.page != 6: Rectangle {
+        if root.page != 0 && root.page != 6 && root.page != 7: Rectangle {
             height: 60px;
             background: Theme.card;
             drop-shadow-blur: 8px;

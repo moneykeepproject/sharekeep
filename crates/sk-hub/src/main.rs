@@ -6,6 +6,10 @@
 //! sharekeep-hub status      --data <folder>
 //! sharekeep-hub install     --data <folder> --user <installing user>   (Windows, elevated;
 //!                                                                     macOS, with sudo)
+//! sharekeep-hub make-hub    --user <DOMAIN\user>   (Windows, elevated: prepare, setup the first
+//!                                                  time, install; the folder is always
+//!                                                  %ProgramData%\ShareKeep Hub; exit codes
+//!                                                  in sk_client::makehub)
 //! sharekeep-hub uninstall   [--data <folder>]
 //! sharekeep-hub service-run --data <folder>                             (the Windows service)
 //! ```
@@ -13,6 +17,7 @@
 //! Users never run this by hand: the installer sets it up and runs it as a service. The
 //! commands are for the installer, support and tests.
 
+use sk_client::makehub::{self, Exit};
 use sk_hub::{service, wifi, HubConfig, HubOptions, KeyStore};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -30,45 +35,21 @@ fn run() -> Result<(), String> {
     if cmd == "uninstall" {
         return uninstall(arg(&args, "--data").map(PathBuf::from).as_deref());
     }
+    if cmd == "make-hub" {
+        let exit = make_hub(&args);
+        if exit != Exit::Done {
+            let data = makehub::windows_data().unwrap_or_default();
+            eprintln!("{}", exit.message(&data));
+        }
+        std::process::exit(i32::from(exit.code()));
+    }
     let data = arg(&args, "--data")
         .map(PathBuf::from)
         .ok_or("--data <folder> is needed")?;
     match cmd {
         "setup" => {
             let address = arg(&args, "--address").ok_or("--address <hub IPv4> is needed")?;
-            let ip = if address == "auto" {
-                service::detect_address().ok_or(
-                    "This computer doesn't seem to be on a home network. Connect it, then try again.",
-                )?
-            } else {
-                wifi::check_address(&address)?
-            };
-            if !wifi::address_present(ip) {
-                return Err(format!(
-                    "This computer doesn't have the address {ip}. Give it a fixed address on the home network first (see the help: a DHCP reservation)."
-                ));
-            }
-            let name = match arg(&args, "--name") {
-                Some(n) => wifi::check_name(&n)?,
-                None => None,
-            };
-            let cfg = HubConfig::new(ip, name);
-            let keys = KeyStore::files(data.clone());
-            let info = sk_hub::setup(
-                &data,
-                &cfg,
-                &keys,
-                &wifi::computer_name(),
-                sk_hub::util::now_ms(),
-            )?;
-            println!("The hub is set up.");
-            println!("Certificate: {}", info.ca_name);
-            println!("Fingerprint: {}", info.fingerprint);
-            println!(
-                "Devices trust it from http://{}:{}/",
-                cfg.address, cfg.helper_port
-            );
-            Ok(())
+            setup(&data, &address, arg(&args, "--name")).map_err(|(_, e)| e)
         }
         "run" => {
             let mut opts = HubOptions::new(data);
@@ -100,10 +81,101 @@ fn run() -> Result<(), String> {
         }
         "service-run" => service_run(data),
         _ => Err(
-            "usage: sharekeep-hub <prepare|setup|run|status|install|uninstall|service-run> --data <folder> …"
+            "usage: sharekeep-hub <make-hub|prepare|setup|run|status|install|uninstall|service-run> --data <folder> …"
                 .into(),
         ),
     }
+}
+
+/// `setup`: certificates and settings in `data`. The error says whether it was the network.
+fn setup(data: &Path, address: &str, name: Option<String>) -> Result<(), (bool, String)> {
+    let ip = if address == "auto" {
+        service::detect_address().ok_or((
+            true,
+            "This computer doesn't seem to be on a home network. Connect it, then try again."
+                .to_string(),
+        ))?
+    } else {
+        wifi::check_address(address).map_err(|e| (false, e))?
+    };
+    if !wifi::address_present(ip) {
+        return Err((true, format!(
+            "This computer doesn't have the address {ip}. Give it a fixed address on the home network first (see the help: a DHCP reservation)."
+        )));
+    }
+    let name = match name {
+        Some(n) => wifi::check_name(&n).map_err(|e| (false, e))?,
+        None => None,
+    };
+    let cfg = HubConfig::new(ip, name);
+    let data = data.to_path_buf();
+    let keys = KeyStore::files(data.clone());
+    let info = sk_hub::setup(
+        &data,
+        &cfg,
+        &keys,
+        &wifi::computer_name(),
+        sk_hub::util::now_ms(),
+    )
+    .map_err(|e| (false, e))?;
+    println!("The hub is set up.");
+    println!("Certificate: {}", info.ca_name);
+    println!("Fingerprint: {}", info.fingerprint);
+    println!(
+        "Devices trust it from http://{}:{}/",
+        cfg.address, cfg.helper_port
+    );
+    Ok(())
+}
+
+/// `make-hub`: everything Setup's hub section does, in one elevated program (0.1.4: the app's
+/// "Make this computer the hub" and Setup both run it). The folder is never the caller's: an
+/// ordinary program asking for the same prompt can't point it elsewhere.
+fn make_hub(args: &[String]) -> Exit {
+    if !cfg!(windows) || arg(args, "--data").is_some() {
+        return Exit::BadArguments;
+    }
+    let Some(user) = arg(args, "--user").filter(|u| makehub::user_ok(u)) else {
+        return Exit::BadArguments;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return Exit::BadArguments;
+    };
+    if !makehub::under(&exe, &makehub::program_files()) {
+        return Exit::NotInProgramFiles;
+    }
+    let Some(data) = makehub::windows_data() else {
+        return Exit::BadArguments;
+    };
+    let ms = sk_hub::util::now_ms();
+    let stamp = format!("{} {}", sk_ledger::day_of(ms), ms / 1000);
+    match service::prepare_data(&data, &stamp) {
+        Ok(said) => println!("{said}"),
+        Err(e) => {
+            eprintln!("{e}");
+            return Exit::FolderInTheWay;
+        }
+    }
+    // the first time only: an existing hub keeps its certificate (devices stay paired)
+    if !data.join("hub.json").exists() {
+        if let Err((network, e)) = setup(&data, "auto", None) {
+            eprintln!("{e}");
+            return if network {
+                Exit::NoHomeNetwork
+            } else {
+                Exit::SetupFailed
+            };
+        }
+    }
+    if let Err(e) = install(&data, Some(user)) {
+        eprintln!("{e}");
+        return Exit::ServiceDidntStart;
+    }
+    // what Setup writes too: later silent updates find the hub's folder here
+    if let Err(e) = service::run_steps(&[service::hub_data_registry(&data)], &echo) {
+        eprintln!("{e}");
+    }
+    Exit::Done
 }
 
 fn echo(line: &str) {

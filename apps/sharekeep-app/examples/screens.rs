@@ -109,6 +109,31 @@ fn main() {
     st.refresh(&ui);
     let p = |n: &str| format!("{out}/{n}.png");
 
+    // the first question (0.1.4)
+    st.is_hub = false;
+    st.refresh(&ui);
+    st.hub_offer = sharekeep_app::hubhere::Offer::Windows("sharekeep-hub.exe".into());
+    st.show_choice(&ui);
+    ui.set_page(7);
+    shot(&win, w, h, &p("00a-choice"));
+    ui.set_make_hub_step(1);
+    shot(&win, w, h, &p("00b-make-hub-windows"));
+    st.hub_offer = sharekeep_app::hubhere::Offer::Mac("install-hub.command".into());
+    st.show_choice(&ui);
+    ui.set_make_hub_busy(true);
+    shot(&win, w, h, &p("00c-make-hub-mac"));
+    ui.set_make_hub_busy(false);
+    ui.set_make_hub_step(0);
+    st.hub_offer = sharekeep_app::hubhere::Offer::No(
+        "Install ShareKeep with its setup to make this computer the hub (this copy isn't in Program Files).".into(),
+    );
+    st.hub_folder_note = "This computer is a hub, but this account may not read its key (Access is denied). Make this computer the hub again from this account: it lets this account manage the hub.".into();
+    st.show_choice(&ui);
+    shot(&win, w, h, &p("00d-choice-not-offered"));
+    st.hub_folder_note.clear();
+    st.is_hub = true;
+    st.refresh(&ui);
+
     // joining a hub
     ui.set_page(0);
     shot(&win, w, h, &p("00-join"));

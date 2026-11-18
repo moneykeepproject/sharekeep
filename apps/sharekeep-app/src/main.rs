@@ -8,12 +8,11 @@
 
 use sharekeep_app::config::{self, AppConfig};
 use sharekeep_app::controller::{self, State};
-use sharekeep_app::worker;
+use sharekeep_app::{hubhere, worker};
 use sk_ui::AppWindow;
 use slint::ComponentHandle;
 use std::cell::RefCell;
-use std::net::{Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -27,34 +26,6 @@ fn arg(name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-/// The hub's admin port and token, when this computer runs the hub. On Windows the folder
-/// and both files must belong to the administrators (or the hub's service): an ordinary
-/// program can make a folder of that name in `%ProgramData%`, and the app would then send the
-/// PIN and a book's password to whatever it names (review H2).
-fn hub_admin(data: &Path) -> Option<(SocketAddr, String)> {
-    for p in [
-        data.to_path_buf(),
-        data.join("admin.token"),
-        data.join("hub.json"),
-    ] {
-        if let Err(why) = sk_client::owner::protected(&p) {
-            eprintln!("Not using the hub folder: {why}");
-            return None;
-        }
-    }
-    let token = std::fs::read_to_string(data.join("admin.token")).ok()?;
-    let port = std::fs::read(data.join("hub.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v["admin_port"].as_u64())
-        .and_then(|p| u16::try_from(p).ok())
-        .unwrap_or(sk_client::ADMIN_PORT);
-    Some((
-        SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
-        token.trim().to_string(),
-    ))
-}
-
 fn main() -> Result<(), slint::PlatformError> {
     let dir = arg("--data")
         .map(PathBuf::from)
@@ -65,12 +36,17 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = cfg.save(&dir);
     }
     // the hub installed on this computer is found without --hub-data
-    let admin = cfg
-        .hub_data
-        .clone()
-        .or_else(config::default_hub_data)
-        .as_deref()
-        .and_then(hub_admin);
+    let found = hubhere::find(
+        cfg.hub_data
+            .clone()
+            .or_else(config::default_hub_data)
+            .as_deref(),
+    );
+    let (admin, folder_note) = match found {
+        hubhere::HubFolder::Here(a) => (Some(a), String::new()),
+        hubhere::HubFolder::Unusable(why) => (None, why),
+        hubhere::HubFolder::None => (None, String::new()),
+    };
     let is_hub = admin.is_some();
 
     let ui = AppWindow::new()?;
@@ -94,16 +70,12 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let paired = cfg.paired();
     let mut state = State::new(dir, cfg, jobs, is_hub);
-    // the hub computer starts with EZ Start until it's finished or skipped
-    ui.set_page(if is_hub && !state.cfg.ez_done {
-        6
-    } else if paired {
-        1
-    } else if is_hub {
-        5
-    } else {
-        0
-    });
+    state.hub_offer = hubhere::offer();
+    state.hub_folder_note = folder_note;
+    state.show_choice(&ui);
+    // the start-up table (hubhere::first_page): the hub's EZ Start until it's finished, the
+    // app once paired, the Hub tab, otherwise the choice between joining and making this the hub
+    ui.set_page(hubhere::first_page(is_hub, state.cfg.ez_done, paired));
     ui.set_device_name(state.cfg.device_name.clone().unwrap_or_default().into());
     if paired {
         state.connect();
@@ -125,6 +97,19 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     let _keep = Rc::new(timer);
+    // the Mac's install script runs in Terminal: watch for the hub every few seconds
+    let watch = slint::Timer::default();
+    let w = ui.as_weak();
+    watch.start(
+        slint::TimerMode::Repeated,
+        Duration::from_secs(3),
+        move || {
+            if let Some(ui) = w.upgrade() {
+                with(&ui, |st, ui| st.poll_for_hub(ui));
+            }
+        },
+    );
+    let _watch = Rc::new(watch);
     ui.run()
 }
 
@@ -201,6 +186,15 @@ fn wire(ui: &AppWindow) {
     on!(on_edit_entry, |st, u, seq: i32| st.edit_entry(u, seq));
     on!(on_dispute_entry, |st, _u, seq: i32| st.dispute_entry(seq));
     on!(on_attach_file, |st, u, seq: i32| st.attach_file(u, seq));
+    on!(on_make_hub, |st, u| st.make_hub(u));
+    on!(on_check_for_hub, |st, u| {
+        if !st.check_for_hub(u) && st.hub_folder_note.is_empty() {
+            u.set_make_hub_error(
+                "ShareKeep doesn't see the hub yet. Finish the steps in Terminal, then try again."
+                    .into(),
+            );
+        }
+    });
     on!(
         on_correct_deposit,
         |st, u, row: i32, seq: i32, text: slint::SharedString| st

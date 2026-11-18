@@ -106,9 +106,25 @@ launcher opens a copy in Applications and links to the releases, as for the othe
 - The firewall rule covers private and domain networks only, never public ones (a hub must
   not answer on a café's Wi-Fi). Windows marks a new network public: Help and questions tells
   the household to make the home network private.
-- The installing account may read `admin.token`; on a PC where the everyday account isn't the
-  one that ran the setup (a separate administrator account), the everyday account gets no Hub
-  tab. Run the setup from the account that will use the hub computer.
+- Setup's hub option gives the installing account read access to `admin.token`; on a PC with a
+  separate administrator account the everyday account then gets no Hub tab. "Make this
+  computer the hub" in the app (0.1.4) passes the account running the app instead: run it from
+  the everyday account (again, if the hub exists already) to fix this.
 - The hub option needs ShareKeep in Program Files: the service runs the hub program from the
   install folder, and only Program Files is locked against ordinary programs.
+
+## make-hub (0.1.4)
+
+`sharekeep-hub make-hub --user <DOMAIN\user>` (Windows, elevated) does Setup's hub section in
+one program: `prepare` (a planted folder moved aside), `setup --address auto` the first time
+only, `install`, and `HKLM\Software\ShareKeep\HubData` (64-bit view, `reg.exe`). Setup's hub
+section and the app's "Make this computer the hub" both run it, so the two routes can't drift
+apart. It takes no `--data` (refused): the folder is always `%ProgramData%\ShareKeep Hub`, so
+an ordinary program asking for the same prompt can't point it elsewhere. It refuses unless its
+own program is under Program Files. `--user` must be `name` or `DOMAIN\name` (no quotes or
+leading dash). Exit codes (`sk_client::makehub::Exit`): 0 done, 10 not under Program Files,
+11 the folder can't be moved aside, 12 not on a home network, 13 setup failed, 14 the service
+couldn't start, 15 called wrongly. The service being registered is what keeps the hub through
+later silent updates (HubInstalled), so launcher updates need nothing more. windows.yml runs it:
+a silent install without /HUB, then make-hub, then a silent upgrade that keeps it.
 

@@ -310,45 +310,34 @@ Section /o "Household hub on this computer" SecHub
     ${EndIf}
     Goto hubdone
   ${EndIf}
-  ; a data folder that isn't the hub's own (anything in it owned by someone other than the
-  ; administrators, SYSTEM or a service, or a link) is moved aside, never trusted (review H2)
-  DetailPrint "Checking the household hub's folder"
-  nsExec::ExecToLog `"$INSTDIR\${HUB_EXE}" prepare --data "$HubData"`
-  Pop $1
-  ${If} $1 != 0
-    MessageBox MB_OK|MB_ICONEXCLAMATION "The household hub's folder ($HubData) wasn't made by ShareKeep's setup and can't be moved aside. The details are in the list above. Move or delete that folder, then run this setup again." /SD IDOK
-    ${If} ${Silent}
-      SetErrorLevel ${EXIT_FAILED}
-      Quit
-    ${EndIf}
-    Goto hubdone
-  ${EndIf}
-  ; first time only: an existing hub keeps its certificate (devices stay paired) and its books
-  ${IfNot} ${FileExists} "$HubData\hub.json"
-    DetailPrint "Setting up the household hub"
-    nsExec::ExecToLog `"$INSTDIR\${HUB_EXE}" setup --data "$HubData" --address auto`
-    Pop $1
-    ${If} $1 != 0
-      MessageBox MB_OK|MB_ICONEXCLAMATION "The household hub couldn't be set up: this computer doesn't seem to be on the home network. Connect it to the home Wi-Fi or network, then run this setup again." /SD IDOK
-      ${If} ${Silent}
-        SetErrorLevel ${EXIT_FAILED}
-        Quit
-      ${EndIf}
-      Goto hubdone
-    ${EndIf}
-  ${EndIf}
+  ; prepare (a folder that isn't the hub's own is moved aside, review H2), setup the first
+  ; time (an existing hub keeps its certificate and books), install, HubData: one program,
+  ; the same one the app runs for "Make this computer the hub" (0.1.4), so the two routes
+  ; can't drift apart. Its folder is always %ProgramData%\ShareKeep Hub. Exit codes:
+  ; sk_client::makehub.
   ReadEnvStr $2 "USERDOMAIN"
   ReadEnvStr $3 "USERNAME"
-  DetailPrint "Starting the household hub service"
-  nsExec::ExecToLog `"$INSTDIR\${HUB_EXE}" install --data "$HubData" --user "$2\$3"`
+  DetailPrint "Setting up the household hub"
+  nsExec::ExecToLog `"$INSTDIR\${HUB_EXE}" make-hub --user "$2\$3"`
   Pop $1
-  ${If} $1 != 0
-    MessageBox MB_OK|MB_ICONEXCLAMATION "The household hub service couldn't be started. The details are in the list above; $HubData\hub.log may say more." /SD IDOK
-    ${If} ${Silent}
-      SetErrorLevel ${EXIT_FAILED}
-      Quit
-    ${EndIf}
+  ${If} $1 == 0
+    Goto hubok
+  ${ElseIf} $1 == 11
+    StrCpy $6 "The household hub's folder ($HubData) wasn't made by ShareKeep's setup and can't be moved aside. The details are in the list above. Move or delete that folder, then run this setup again."
+  ${ElseIf} $1 == 12
+    StrCpy $6 "The household hub couldn't be set up: this computer doesn't seem to be on the home network. Connect it to the home Wi-Fi or network, then run this setup again."
+  ${ElseIf} $1 == 14
+    StrCpy $6 "The household hub service couldn't be started. The details are in the list above; $HubData\hub.log may say more."
+  ${Else}
+    StrCpy $6 "The household hub couldn't be set up (code $1). The details are in the list above."
   ${EndIf}
+  MessageBox MB_OK|MB_ICONEXCLAMATION "$6" /SD IDOK
+  ${If} ${Silent}
+    SetErrorLevel ${EXIT_FAILED}
+    Quit
+  ${EndIf}
+  Goto hubdone
+  hubok:
   WriteRegStr HKLM "${SETTINGS_KEY}" "HubData" "$HubData"
   hubdone:
 SectionEnd

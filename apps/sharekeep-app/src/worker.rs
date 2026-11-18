@@ -31,6 +31,13 @@ pub enum Job {
     },
     /// Give up the checkpoint given when pairing.
     ForgetCheckpoint,
+    /// Windows: run `sharekeep-hub make-hub` with the administrator prompt and wait (0.1.4).
+    MakeHub {
+        exe: PathBuf,
+        user: String,
+    },
+    /// This computer became the hub: its admin port and token from now on.
+    SetAdmin(Option<(SocketAddr, String)>),
     /// Attach a picture or PDF from this computer to an expense (a photo is shrunk first).
     Attach {
         seq: u64,
@@ -110,6 +117,8 @@ pub enum Outcome {
     /// A checkpoint's answer: (kept everywhere, the words).
     Checked(bool, String),
     Hashed(Result<String, String>),
+    /// How "Make this computer the hub" ended on Windows.
+    MadeHub(crate::hubhere::Elevated),
 }
 
 /// The local copy after a sync.
@@ -225,6 +234,22 @@ impl Worker {
                 }),
             },
             Job::Sync => Outcome::Synced(self.sync()),
+            Job::MakeHub { exe, user } => {
+                // quoted for Windows' command line; user_ok() refuses quotes
+                if !sk_client::makehub::user_ok(&user) {
+                    return Some(Outcome::MadeHub(crate::hubhere::Elevated::Failed(
+                        "This account's name can't be passed to the hub program.".into(),
+                    )));
+                }
+                Outcome::MadeHub(crate::hubhere::run_elevated(
+                    &exe,
+                    &format!("make-hub --user \"{user}\""),
+                ))
+            }
+            Job::SetAdmin(admin) => {
+                self.admin = admin;
+                return None;
+            }
             Job::Attach { seq, path } => {
                 let Some(p) = self.paired.as_ref() else {
                     return Some(Outcome::Sent(Err("This device isn't paired yet.".into())));

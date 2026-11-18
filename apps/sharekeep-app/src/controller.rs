@@ -104,6 +104,11 @@ pub fn agreement_schedule(
 pub type NeedRow = (MemberId, String, String);
 
 pub struct State {
+    /// How this computer can become the hub, and why a hub folder found here isn't used.
+    pub hub_offer: crate::hubhere::Offer,
+    pub hub_folder_note: String,
+    /// The Mac's install script is running in Terminal: the app watches for the hub.
+    pub waiting_for_hub: bool,
     /// Records of the history this version didn't apply, said on the screen.
     pub skipped_note: Option<String>,
     /// A file asked to be taken off an expense (the next click on it does it).
@@ -208,6 +213,9 @@ impl State {
             .map(|b| currency(&b.currency))
             .unwrap_or(Currency::ALL[0]);
         State {
+            hub_offer: crate::hubhere::Offer::No(String::new()),
+            hub_folder_note: String::new(),
+            waiting_for_hub: false,
             skipped_note: None,
             armed_detach: None,
             dir,
@@ -377,6 +385,7 @@ impl State {
                 ui.set_check_ok(ok);
                 ui.set_check_answer(s(text));
             }
+            Outcome::MadeHub(how) => self.made_hub(ui, how),
             Outcome::Hashed(Ok(sha)) => {
                 let (ok, text) = view::check_statement(&self.ledger, &sha);
                 ui.set_check_ok(ok);
@@ -935,6 +944,123 @@ impl State {
                 }
             },
         );
+    }
+
+    // ----- join a hub, or make this computer the hub (0.1.4) ---------------------------------
+
+    /// The choice's state on the screen: what "Make this computer the hub" can do here, and
+    /// why a hub's folder found here isn't used.
+    pub fn show_choice(&self, ui: &AppWindow) {
+        use crate::hubhere::Offer;
+        let (kind, note) = match &self.hub_offer {
+            Offer::Windows(_) => ("windows", String::new()),
+            Offer::Mac(_) => ("mac", String::new()),
+            Offer::No(why) => ("no", why.clone()),
+        };
+        ui.set_hub_offer_kind(s(kind));
+        ui.set_hub_offer_note(s(note));
+        ui.set_hub_folder_note(s(self.hub_folder_note.clone()));
+    }
+
+    /// "Make this computer the hub": Windows asks for administrator permission and runs
+    /// `make-hub`; a Mac opens the install script in Terminal and the app watches for the hub.
+    pub fn make_hub(&mut self, ui: &AppWindow) {
+        use crate::hubhere::Offer;
+        ui.set_make_hub_error(s(""));
+        match self.hub_offer.clone() {
+            Offer::Windows(exe) => {
+                let Some(user) = crate::hubhere::this_user() else {
+                    return ui.set_make_hub_error(s(
+                        "ShareKeep can't tell which account is running it.",
+                    ));
+                };
+                ui.set_make_hub_busy(true);
+                self.send(Job::MakeHub { exe, user });
+            }
+            Offer::Mac(script) => match crate::hubhere::open_in_terminal(&script) {
+                Ok(()) => {
+                    self.waiting_for_hub = true;
+                    ui.set_make_hub_busy(true);
+                }
+                Err(e) => ui.set_make_hub_error(s(e)),
+            },
+            Offer::No(why) => ui.set_make_hub_error(s(why)),
+        }
+    }
+
+    /// Is this computer the hub now? Then go to the hub's EZ Start without restarting.
+    pub fn check_for_hub(&mut self, ui: &AppWindow) -> bool {
+        let data = self
+            .cfg
+            .hub_data
+            .clone()
+            .or_else(crate::config::default_hub_data);
+        match crate::hubhere::find(data.as_deref()) {
+            // the Mac's script writes the folder before the password is typed: wait until the
+            // hub answers too
+            crate::hubhere::HubFolder::Here(admin)
+                if self.waiting_for_hub
+                    && std::net::TcpStream::connect_timeout(
+                        &admin.0,
+                        std::time::Duration::from_millis(300),
+                    )
+                    .is_err() =>
+            {
+                false
+            }
+            crate::hubhere::HubFolder::Here(admin) => {
+                self.waiting_for_hub = false;
+                self.hub_folder_note.clear();
+                self.is_hub = true;
+                self.send(Job::SetAdmin(Some(admin)));
+                ui.set_make_hub_busy(false);
+                ui.set_make_hub_step(0);
+                self.ez_manual = None;
+                ui.set_page(crate::hubhere::PAGE_EZ);
+                self.hub_status();
+                true
+            }
+            crate::hubhere::HubFolder::Unusable(why) => {
+                self.hub_folder_note = why;
+                self.show_choice(ui);
+                false
+            }
+            crate::hubhere::HubFolder::None => false,
+        }
+    }
+
+    /// The Mac's watch for the hub, every few seconds while the script runs.
+    pub fn poll_for_hub(&mut self, ui: &AppWindow) {
+        if self.waiting_for_hub {
+            self.check_for_hub(ui);
+        }
+    }
+
+    fn made_hub(&mut self, ui: &AppWindow, how: crate::hubhere::Elevated) {
+        use crate::hubhere::Elevated;
+        use sk_client::makehub::Exit;
+        ui.set_make_hub_busy(false);
+        let data = sk_client::makehub::windows_data().unwrap_or_default();
+        match how {
+            // said no at the prompt: back to the choice, nothing to say
+            Elevated::Declined => ui.set_make_hub_step(0),
+            Elevated::Failed(e) => ui.set_make_hub_error(s(e)),
+            Elevated::Exited(code) => match Exit::from_code(code) {
+                Some(Exit::Done) => {
+                    if !self.check_for_hub(ui) {
+                        ui.set_make_hub_error(s(format!(
+                            "The hub was set up, but ShareKeep can't use it yet. {}",
+                            self.hub_folder_note
+                        )));
+                    }
+                }
+                Some(e) => ui.set_make_hub_error(s(e.message(&data))),
+                None => ui.set_make_hub_error(s(format!(
+                    "The hub program ended unexpectedly (code {code}). {} may say more.",
+                    data.join("hub.log").display()
+                ))),
+            },
+        }
     }
 
     pub fn hub_status(&self) {

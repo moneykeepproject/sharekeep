@@ -121,3 +121,36 @@ have spaces, which otherwise broke the request (the hub answered 400).
   deductions, recurring bills, special events, schedule changes, joining and leaving.
 - Lists with text fields (days, usage, receipt lines, exact amounts) are updated row by row,
   so a field keeps the cursor while someone types.
+
+## The first question (0.1.4)
+
+A computer that isn't paired and isn't the hub starts with a choice (page 7):
+**Join my household's hub** (the joining steps; their step 1 has Back to the choice) or
+**Make this computer the hub**. Nothing is remembered about a choice that wasn't finished; the
+choice comes back at every start until the device is paired or the computer is the hub. The
+start-up table (`hubhere::first_page`, unit-tested):
+
+| Hub here? | State | First screen |
+|---|---|---|
+| yes | hub EZ Start not finished | hub EZ Start (page 6) |
+| either | paired | the app (page 1) |
+| yes | EZ Start finished, not paired | Hub tab (page 5) |
+| no | not paired | the choice (page 7) |
+
+"Make this computer the hub":
+- **Windows:** offered only when the app runs from Program Files with `sharekeep-hub.exe` beside
+  it. The screen says what happens (Windows asks for administrator permission; the hub runs in
+  the background from now on; give the computer a fixed address first), then the worker runs
+  `sharekeep-hub.exe make-hub --user <this account>` with `ShellExecuteExW` and the `runas`
+  verb, hidden, waits and reads the exit code (`sk_client::makehub::Exit`, the same messages
+  as Setup). Declining the prompt returns to the choice silently. On success the app finds the
+  hub (`hubhere::find`), gives the worker its admin port (`Job::SetAdmin`) and goes to the
+  hub's EZ Start without restarting.
+- **Mac:** the app opens its own copy of "Install the household hub" (in
+  `ShareKeep.app/Contents/Resources`) in Terminal, which asks for the password; nothing of
+  ShareKeep's runs as root. The app looks for the hub every 3 s (and on "I've done it").
+- A hub folder that is found but can't be used (not owned by the administrators, or this
+  account may not read `admin.token`) is said under the second button, with what to do.
+- Dev builds: `--hub-data <folder>` still works; a build not in Program Files shows the
+  choice with the second button explained but not offered.
+

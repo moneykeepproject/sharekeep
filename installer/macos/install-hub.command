@@ -51,6 +51,7 @@ sudo /bin/launchctl bootout "system/$LABEL" 2>/dev/null || true
 sudo /usr/bin/install -o root -g wheel -m 644 "$TMP" "$PLIST"
 sudo /bin/launchctl bootstrap system "$PLIST"
 echo
-echo "The hub is running. Open ShareKeep: its Hub tab sets the PIN, the book and the people."
+echo "The hub is running. Go back to ShareKeep (open it if it's closed): it goes on to set the"
+echo "PIN, the book and the people."
 echo "Give this Mac a fixed address on your router (a DHCP reservation) so devices can find it."
 read -r -p "Press Return to close." _
